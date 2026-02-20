@@ -1,0 +1,28 @@
+package com.notifly.common.error;
+
+public enum StandardErrorCode {
+    TENANT_NOT_FOUND("TENANT_NOT_FOUND"),
+    TENANT_MISMATCH("TENANT_MISMATCH"),
+    INVALID_API_KEY("INVALID_API_KEY"),
+    RATE_LIMIT_EXCEEDED("RATE_LIMIT_EXCEEDED"),
+    IDEMPOTENCY_CONFLICT("IDEMPOTENCY_CONFLICT"),
+    INVALID_REQUEST("INVALID_REQUEST"),
+    TEMPLATE_NOT_FOUND("TEMPLATE_NOT_FOUND"),
+    NOTIFICATION_NOT_FOUND("NOTIFICATION_NOT_FOUND"),
+    CHANNEL_NOT_SUPPORTED("CHANNEL_NOT_SUPPORTED"),
+    INTERNAL_ERROR("INTERNAL_ERROR"),
+    UNAUTHORIZED("UNAUTHORIZED"),
+    FORBIDDEN("FORBIDDEN"),
+    METHOD_NOT_ALLOWED("METHOD_NOT_ALLOWED"),
+    NOT_FOUND("NOT_FOUND");
+
+    private final String code;
+
+    StandardErrorCode(String code) {
+        this.code = code;
+    }
+
+    public String getCode() {
+        return code;
+    }
+}

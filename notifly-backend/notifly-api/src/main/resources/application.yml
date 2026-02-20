@@ -1,0 +1,135 @@
+spring:
+  application:
+    name: notifly-api
+
+  datasource:
+    url: ${SPRING_DATASOURCE_URL}
+    username: ${SPRING_DATASOURCE_USERNAME}
+    password: ${SPRING_DATASOURCE_PASSWORD}
+    driver-class-name: org.postgresql.Driver
+    hikari:
+      maximum-pool-size: ${HIKARI_MAX_POOL_SIZE:10}
+      minimum-idle: 2
+      connection-timeout: 30000
+      idle-timeout: 600000
+      max-lifetime: 1800000
+      connection-init-sql: "SELECT 1"
+
+  jpa:
+    hibernate:
+      ddl-auto: validate
+    properties:
+      hibernate:
+        dialect: org.hibernate.dialect.PostgreSQLDialect
+        jdbc:
+          batch_size: 25
+        order_inserts: true
+        order_updates: true
+        format_sql: false
+    show-sql: false
+    open-in-view: false
+
+  liquibase:
+    enabled: ${LIQUIBASE_ENABLED:true}
+    change-log: classpath:db/changelog/db.changelog-master.xml
+
+  data:
+    redis:
+      host: ${REDIS_HOST:localhost}
+      port: ${REDIS_PORT:6379}
+      password: ${REDIS_PASSWORD:}
+      timeout: 2000
+      lettuce:
+        pool:
+          max-active: 16
+          max-idle: 8
+          min-idle: 2
+          max-wait: 1000
+
+  kafka:
+    bootstrap-servers: ${KAFKA_BOOTSTRAP_SERVERS:localhost:9092}
+    producer:
+      acks: all
+      retries: 5
+      key-serializer: org.apache.kafka.common.serialization.StringSerializer
+      value-serializer: org.springframework.kafka.support.serializer.JsonSerializer
+      properties:
+        "[linger.ms]": 5
+        "[batch.size]": 32768
+        "[enable.idempotence]": true
+        "[max.in.flight.requests.per.connection]": 5
+    consumer:
+      group-id: notifly-api-group
+      auto-offset-reset: earliest
+      enable-auto-commit: false
+      key-deserializer: org.apache.kafka.common.serialization.StringDeserializer
+      value-deserializer: org.apache.kafka.common.serialization.StringDeserializer
+
+server:
+  port: ${PORT:8080}
+  servlet:
+    context-path: /
+  compression:
+    enabled: true
+    mime-types: application/json,text/plain
+  tomcat:
+    threads:
+      max: 200
+      min-spare: 10
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,prometheus,metrics
+      base-path: /actuator
+  endpoint:
+    health:
+      show-details: always
+
+  prometheus:
+    metrics:
+      export:
+        enabled: true
+
+  metrics:
+    tags:
+      application: notifly-api
+      environment: ${SPRING_PROFILES_ACTIVE:dev}
+
+# Custom config (requires @ConfigurationProperties binding)
+notifly:
+  jwt:
+    secret: ${JWT_SECRET}
+    expiration-ms: ${JWT_EXPIRY_MS:86400000}
+    refresh-expiration-ms: ${JWT_REFRESH_EXPIRY_MS:604800000}
+
+  api-key:
+    prefix: nf_live_
+
+  rate-limit:
+    default-requests-per-minute: ${RATE_LIMIT_RPM:60}
+    default-burst-limit: ${RATE_LIMIT_BURST:100}
+
+  kafka:
+    topic: notification.events
+    outbox-topic: notification.outbox
+    retry-topics:
+      - notification.retry.1s
+      - notification.retry.5s
+      - notification.retry.30s
+    dlq-topic: notification.dlq
+
+  outbox:
+    poll-interval: ${OUTBOX_POLL_MS:1000}
+    batch-size: ${OUTBOX_BATCH_SIZE:100}
+
+logging:
+  level:
+    "[com.notifly]": ${LOG_LEVEL:INFO}
+    "[org.springframework.security]": WARN
+    "[org.springframework.kafka]": WARN
+    "[org.hibernate.SQL]": WARN
+    "[org.hibernate.type]": WARN
+  pattern:
+    console: '%d{yyyy-MM-dd HH:mm:ss.SSS} [%thread] [%X{correlationId}] %-5level %logger{36} - %msg%n'

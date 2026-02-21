@@ -12,17 +12,25 @@ import java.time.Instant;
 import java.util.UUID;
 
 /**
- * Admin user management
+ * Admin user — supports BOTH email/password and Google OAuth.
+ *
+ * For email users:  passwordHash is set, googleId is null
+ * For Google users: googleId is set, passwordHash is null
+ * For linked users: both are set (user registered with email, then linked Google)
+ *
+ * authProvider tracks the ORIGINAL sign-up method.
  */
 @Entity
 @Table(name = "admin_users", indexes = {
-    @Index(name = "idx_admin_tenant_email", columnList = "tenant_id,email")
+    @Index(name = "idx_admin_tenant_email",   columnList = "tenant_id,email"),
+    @Index(name = "idx_admin_google_id",       columnList = "google_id")
 })
 @Data
 @Builder
 @NoArgsConstructor
 @AllArgsConstructor
 public class AdminUser {
+
     @Id
     @GeneratedValue(strategy = GenerationType.UUID)
     private UUID id;
@@ -33,7 +41,8 @@ public class AdminUser {
     @Column(nullable = false)
     private String email;
 
-    @Column(nullable = false)
+    // Nullable — Google-only users don't have a password
+    @Column
     private String passwordHash;
 
     @Column(nullable = false)
@@ -42,12 +51,25 @@ public class AdminUser {
     @Column(nullable = false)
     private String lastName;
 
+    // "LOCAL" | "GOOGLE" | "LINKED"
+    @Column(nullable = false)
+    @Builder.Default
+    private String authProvider = "LOCAL";
+
+    // Google's stable user ID (sub field from ID token)
+    @Column(unique = true)
+    private String googleId;
+
+    // Google profile picture URL (optional, shown in sidebar avatar)
+    @Column
+    private String avatarUrl;
 
     @Column(nullable = false)
-    private String role; 
-    
-    @Column(nullable = false)    
-    private boolean active;
+    private String role;
+
+    @Column(nullable = false)
+    @Builder.Default
+    private boolean active = true;
 
     @CreationTimestamp
     @Column(nullable = false, updatable = false)
@@ -56,7 +78,7 @@ public class AdminUser {
     @UpdateTimestamp
     private Instant updatedAt;
 
-    @ManyToOne
+    @ManyToOne(fetch = FetchType.LAZY)
     @JoinColumn(name = "tenant_id", insertable = false, updatable = false)
     private Tenant tenant;
 }

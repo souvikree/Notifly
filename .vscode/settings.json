@@ -5,7 +5,9 @@
         "LIQUIBASE",
         "NOTIFLY",
         "pooler",
+        "projectlombok",
         "SENDGRID",
+        "springframework",
         "sslmode",
         "SUPABASE"
     ]

@@ -86,18 +86,16 @@ management:
   endpoint:
     health:
       show-details: always
-
   prometheus:
     metrics:
       export:
         enabled: true
-
   metrics:
     tags:
       application: notifly-api
       environment: ${SPRING_PROFILES_ACTIVE:dev}
 
-# Custom config (requires @ConfigurationProperties binding)
+# ── Notifly custom configuration ─────────────────────────────────────────────
 notifly:
   jwt:
     secret: ${JWT_SECRET}
@@ -123,6 +121,19 @@ notifly:
   outbox:
     poll-interval: ${OUTBOX_POLL_MS:1000}
     batch-size: ${OUTBOX_BATCH_SIZE:100}
+
+  # Google OAuth — only used by AuthController in notifly-api
+  # Get your Client ID from: https://console.cloud.google.com
+  #   → APIs & Services → Credentials → Create OAuth 2.0 Client ID (Web application)
+  #   → Authorized JavaScript origins: http://localhost:3000 (and your production URL)
+  default-tenant-id: ${NOTIFLY_DEFAULT_TENANT_ID:}
+
+# ── Google OAuth2 ─────────────────────────────────────────────────────────────
+# Injected into AuthController via @Value("${google.client-id}")
+# Backend uses this to verify Google ID tokens server-side with Google's API.
+# Never trust the frontend alone — always verify here.
+google:
+  client-id: ${GOOGLE_CLIENT_ID}
 
 logging:
   level:

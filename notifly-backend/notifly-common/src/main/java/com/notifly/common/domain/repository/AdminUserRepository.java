@@ -10,14 +10,22 @@ import java.util.UUID;
 
 @Repository
 public interface AdminUserRepository extends JpaRepository<AdminUser, UUID> {
-    
+
     Optional<AdminUser> findByEmail(String email);
 
     Optional<AdminUser> findByTenantIdAndEmail(UUID tenantId, String email);
 
+    Optional<AdminUser> findByEmailAndTenantId(String email, UUID tenantId);
+
+    Optional<AdminUser> findByIdAndTenantId(UUID id, UUID tenantId);
+
     Optional<AdminUser> findByTenantIdAndId(UUID tenantId, UUID id);
 
-    Optional<AdminUser> findByIdAndTenantId(UUID fromString, UUID fromString2);
+    // New: look up Google user by their stable Google sub ID
+    Optional<AdminUser> findByGoogleId(String googleId);
 
-    Optional<AdminUser> findByEmailAndTenantId(String email, UUID fromString);
+    // New: find Google user within a specific tenant
+    Optional<AdminUser> findByTenantIdAndGoogleId(UUID tenantId, String googleId);
+
+    boolean existsByTenantIdAndEmail(UUID tenantId, String email);
 }

@@ -3,17 +3,27 @@ spring:
     name: notifly-api
 
   datasource:
+    # ── Supabase PostgreSQL via PgBouncer (connection pooler) ─────────────────
+    # Use port 6543 for the app (PgBouncer) — handles connection limits.
+    # Use port 5432 only for Liquibase migrations (direct connection needed).
+    # Get these values from: Supabase Dashboard → Settings → Database
     url: ${SPRING_DATASOURCE_URL}
     username: ${SPRING_DATASOURCE_USERNAME}
     password: ${SPRING_DATASOURCE_PASSWORD}
     driver-class-name: org.postgresql.Driver
     hikari:
-      maximum-pool-size: ${HIKARI_MAX_POOL_SIZE:10}
-      minimum-idle: 2
+      # Keep pool small — PgBouncer multiplexes connections on Supabase's side
+      maximum-pool-size: ${HIKARI_MAX_POOL_SIZE:5}
+      minimum-idle: 1
       connection-timeout: 30000
       idle-timeout: 600000
       max-lifetime: 1800000
       connection-init-sql: "SELECT 1"
+      # Required for Supabase PgBouncer in transaction mode
+      # Disables prepared statements which don't work in PgBouncer transaction mode
+      data-source-properties:
+        prepareThreshold: 0
+        preparedStatementCacheQueries: 0
 
   jpa:
     hibernate:
@@ -32,6 +42,11 @@ spring:
   liquibase:
     enabled: ${LIQUIBASE_ENABLED:true}
     change-log: classpath:db/changelog/db.changelog-master.xml
+    # Liquibase needs a DIRECT connection (port 5432), not PgBouncer (port 6543)
+    # because it uses advisory locks which require session-level persistence.
+    url: ${LIQUIBASE_DATASOURCE_URL:${SPRING_DATASOURCE_URL}}
+    user: ${SPRING_DATASOURCE_USERNAME}
+    password: ${SPRING_DATASOURCE_PASSWORD}
 
   data:
     redis:
@@ -122,16 +137,9 @@ notifly:
     poll-interval: ${OUTBOX_POLL_MS:1000}
     batch-size: ${OUTBOX_BATCH_SIZE:100}
 
-  # Google OAuth — only used by AuthController in notifly-api
-  # Get your Client ID from: https://console.cloud.google.com
-  #   → APIs & Services → Credentials → Create OAuth 2.0 Client ID (Web application)
-  #   → Authorized JavaScript origins: http://localhost:3000 (and your production URL)
   default-tenant-id: ${NOTIFLY_DEFAULT_TENANT_ID:}
 
 # ── Google OAuth2 ─────────────────────────────────────────────────────────────
-# Injected into AuthController via @Value("${google.client-id}")
-# Backend uses this to verify Google ID tokens server-side with Google's API.
-# Never trust the frontend alone — always verify here.
 google:
   client-id: ${GOOGLE_CLIENT_ID}
 

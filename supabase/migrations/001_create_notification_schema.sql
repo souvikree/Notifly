@@ -1,8 +1,10 @@
 -- ============================================================
--- NOTIFLY Supabase Migration
+-- NOTIFLY Supabase Migration — FIXED for PostgreSQL 15
+-- Supabase Dashboard → SQL Editor → New Query → paste → Run
+-- Fix: partial unique constraints moved out of CREATE TABLE
+--      into separate CREATE UNIQUE INDEX statements
 -- ============================================================
 
--- Enable extensions
 CREATE EXTENSION IF NOT EXISTS "uuid-ossp";
 CREATE EXTENSION IF NOT EXISTS "pgcrypto";
 
@@ -10,7 +12,7 @@ CREATE EXTENSION IF NOT EXISTS "pgcrypto";
 CREATE TABLE IF NOT EXISTS tenants (
     id         UUID         PRIMARY KEY DEFAULT uuid_generate_v4(),
     name       VARCHAR(255) NOT NULL UNIQUE,
-    slug       VARCHAR(100) NOT NULL UNIQUE,            -- Supabase version has slug
+    slug       VARCHAR(100) NOT NULL UNIQUE,
     created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
 );
@@ -32,21 +34,17 @@ CREATE TABLE IF NOT EXISTS api_keys (
 );
 
 -- ── Admin Users ───────────────────────────────────────────────────────────────
--- Supports both email/password (LOCAL) and Google OAuth (GOOGLE/LINKED).
---   LOCAL   → password_hash set,  google_id null
---   GOOGLE  → password_hash null, google_id set
---   LINKED  → both set (registered with email, later linked Google)
 CREATE TABLE IF NOT EXISTS admin_users (
     id            UUID         PRIMARY KEY DEFAULT uuid_generate_v4(),
     tenant_id     UUID         NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
     email         VARCHAR(255) NOT NULL,
-    password_hash VARCHAR(255),                         -- NULL for Google-only users
+    password_hash VARCHAR(255),
     first_name    VARCHAR(100),
     last_name     VARCHAR(100),
     auth_provider VARCHAR(20)  NOT NULL DEFAULT 'LOCAL'
                   CHECK (auth_provider IN ('LOCAL', 'GOOGLE', 'LINKED')),
-    google_id     VARCHAR(255) UNIQUE,                  -- Google stable "sub" claim
-    avatar_url    TEXT,                                 -- Google profile picture
+    google_id     VARCHAR(255) UNIQUE,
+    avatar_url    TEXT,
     role          VARCHAR(50)  NOT NULL DEFAULT 'ADMIN' CHECK (role IN ('ADMIN', 'EDITOR', 'VIEWER')),
     is_active     BOOLEAN      DEFAULT TRUE,
     created_at    TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
@@ -54,7 +52,8 @@ CREATE TABLE IF NOT EXISTS admin_users (
     CONSTRAINT unique_admin_email UNIQUE(tenant_id, email)
 );
 
--- ── Notification Requests (idempotency enforcement) ───────────────────────────
+-- ── Notification Requests ─────────────────────────────────────────────────────
+-- NOTE: partial unique constraint on idempotency_key moved to CREATE UNIQUE INDEX below
 CREATE TABLE IF NOT EXISTS notification_requests (
     id              UUID         PRIMARY KEY DEFAULT uuid_generate_v4(),
     tenant_id       UUID         NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
@@ -67,8 +66,8 @@ CREATE TABLE IF NOT EXISTS notification_requests (
                     CHECK (status IN ('PENDING', 'ACCEPTED', 'PROCESSING', 'SENT', 'FAILED')),
     created_at      TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
     updated_at      TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
-    CONSTRAINT unique_request     UNIQUE(tenant_id, request_id),
-    CONSTRAINT unique_idempotency UNIQUE(tenant_id, idempotency_key) WHERE idempotency_key IS NOT NULL
+    CONSTRAINT unique_request UNIQUE(tenant_id, request_id)
+    -- unique_idempotency is a partial index below (WHERE idempotency_key IS NOT NULL)
 );
 
 -- ── Transactional Outbox ──────────────────────────────────────────────────────
@@ -118,17 +117,17 @@ CREATE TABLE IF NOT EXISTS retry_attempts (
 
 -- ── Dead Letter Queue ─────────────────────────────────────────────────────────
 CREATE TABLE IF NOT EXISTS failed_notifications (
-    id                    UUID        PRIMARY KEY DEFAULT uuid_generate_v4(),
-    tenant_id             UUID        NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
-    request_id            UUID        NOT NULL,
-    channel               VARCHAR(50) NOT NULL,
-    error_code            VARCHAR(100),
-    error_details         JSONB,
-    notification_log_id   UUID        REFERENCES notification_logs(id) ON DELETE SET NULL,
-    manual_retry_attempted BOOLEAN    DEFAULT FALSE,
-    manual_retry_count    INT         DEFAULT 0,
-    created_at            TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
-    updated_at            TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+    id                     UUID        PRIMARY KEY DEFAULT uuid_generate_v4(),
+    tenant_id              UUID        NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
+    request_id             UUID        NOT NULL,
+    channel                VARCHAR(50) NOT NULL,
+    error_code             VARCHAR(100),
+    error_details          JSONB,
+    notification_log_id    UUID        REFERENCES notification_logs(id) ON DELETE SET NULL,
+    manual_retry_attempted BOOLEAN     DEFAULT FALSE,
+    manual_retry_count     INT         DEFAULT 0,
+    created_at             TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+    updated_at             TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
 );
 
 -- ── Notification Templates ────────────────────────────────────────────────────
@@ -211,68 +210,78 @@ CREATE TABLE IF NOT EXISTS admin_audit_logs (
 );
 
 -- ============================================================
--- INDEXES
+-- PARTIAL UNIQUE INDEXES
+-- (must be CREATE UNIQUE INDEX, not inline CONSTRAINT in Supabase)
+-- ============================================================
+
+-- Idempotency key is only unique when it is not null
+CREATE UNIQUE INDEX IF NOT EXISTS unique_idempotency
+    ON notification_requests(tenant_id, idempotency_key)
+    WHERE idempotency_key IS NOT NULL;
+
+-- ============================================================
+-- REGULAR INDEXES
 -- ============================================================
 
 -- API Keys
-CREATE INDEX idx_api_keys_tenant        ON api_keys(tenant_id);
-CREATE INDEX idx_api_keys_prefix        ON api_keys(key_prefix);
-CREATE INDEX idx_api_keys_tenant_prefix ON api_keys(tenant_id, key_prefix);
+CREATE INDEX IF NOT EXISTS idx_api_keys_tenant        ON api_keys(tenant_id);
+CREATE INDEX IF NOT EXISTS idx_api_keys_prefix        ON api_keys(key_prefix);
+CREATE INDEX IF NOT EXISTS idx_api_keys_tenant_prefix ON api_keys(tenant_id, key_prefix);
 
 -- Admin Users
-CREATE INDEX idx_admin_users_tenant        ON admin_users(tenant_id);
-CREATE INDEX idx_admin_users_email         ON admin_users(email);
-CREATE INDEX idx_admin_users_tenant_email  ON admin_users(tenant_id, email);
-CREATE INDEX idx_admin_users_google_id     ON admin_users(google_id) WHERE google_id IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_admin_users_tenant       ON admin_users(tenant_id);
+CREATE INDEX IF NOT EXISTS idx_admin_users_email        ON admin_users(email);
+CREATE INDEX IF NOT EXISTS idx_admin_users_tenant_email ON admin_users(tenant_id, email);
+CREATE INDEX IF NOT EXISTS idx_admin_users_google_id    ON admin_users(google_id) WHERE google_id IS NOT NULL;
 
 -- Notification Requests
-CREATE INDEX idx_notification_requests_tenant          ON notification_requests(tenant_id);
-CREATE INDEX idx_notification_requests_request_id      ON notification_requests(request_id);
-CREATE INDEX idx_notification_requests_tenant_reqid    ON notification_requests(tenant_id, request_id);
-CREATE INDEX idx_notification_requests_created         ON notification_requests(created_at DESC);
-CREATE INDEX idx_notification_requests_status          ON notification_requests(status);
-CREATE INDEX idx_notification_requests_payload         ON notification_requests USING GIN(payload);
+CREATE INDEX IF NOT EXISTS idx_notification_requests_tenant       ON notification_requests(tenant_id);
+CREATE INDEX IF NOT EXISTS idx_notification_requests_request_id   ON notification_requests(request_id);
+CREATE INDEX IF NOT EXISTS idx_notification_requests_tenant_reqid ON notification_requests(tenant_id, request_id);
+CREATE INDEX IF NOT EXISTS idx_notification_requests_created      ON notification_requests(created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_notification_requests_status       ON notification_requests(status);
+CREATE INDEX IF NOT EXISTS idx_notification_requests_payload      ON notification_requests USING GIN(payload);
 
 -- Outbox
-CREATE INDEX idx_notification_outbox_status         ON notification_outbox(status);
-CREATE INDEX idx_notification_outbox_tenant_status  ON notification_outbox(tenant_id, status);
-CREATE INDEX idx_notification_outbox_pending        ON notification_outbox(created_at) WHERE status = 'PENDING';
+CREATE INDEX IF NOT EXISTS idx_notification_outbox_status        ON notification_outbox(status);
+CREATE INDEX IF NOT EXISTS idx_notification_outbox_tenant_status ON notification_outbox(tenant_id, status);
+CREATE INDEX IF NOT EXISTS idx_notification_outbox_pending       ON notification_outbox(created_at) WHERE status = 'PENDING';
 
 -- Notification Logs
-CREATE INDEX idx_notification_logs_tenant        ON notification_logs(tenant_id);
-CREATE INDEX idx_notification_logs_request_id    ON notification_logs(request_id);
-CREATE INDEX idx_notification_logs_tenant_reqid  ON notification_logs(tenant_id, request_id);
-CREATE INDEX idx_notification_logs_channel       ON notification_logs(channel);
-CREATE INDEX idx_notification_logs_status        ON notification_logs(status);
-CREATE INDEX idx_notification_logs_created       ON notification_logs(created_at DESC);
-CREATE INDEX idx_notification_logs_composite     ON notification_logs(tenant_id, request_id, channel, retry_attempt);
+CREATE INDEX IF NOT EXISTS idx_notification_logs_tenant       ON notification_logs(tenant_id);
+CREATE INDEX IF NOT EXISTS idx_notification_logs_request_id   ON notification_logs(request_id);
+CREATE INDEX IF NOT EXISTS idx_notification_logs_tenant_reqid ON notification_logs(tenant_id, request_id);
+CREATE INDEX IF NOT EXISTS idx_notification_logs_channel      ON notification_logs(channel);
+CREATE INDEX IF NOT EXISTS idx_notification_logs_status       ON notification_logs(status);
+CREATE INDEX IF NOT EXISTS idx_notification_logs_created      ON notification_logs(created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_notification_logs_composite    ON notification_logs(tenant_id, request_id, channel, retry_attempt);
 
 -- Retry Attempts
-CREATE INDEX idx_retry_attempts_tenant     ON retry_attempts(tenant_id);
-CREATE INDEX idx_retry_attempts_next_retry ON retry_attempts(next_retry_at) WHERE next_retry_at IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_retry_attempts_tenant     ON retry_attempts(tenant_id);
+CREATE INDEX IF NOT EXISTS idx_retry_attempts_next_retry ON retry_attempts(next_retry_at) WHERE next_retry_at IS NOT NULL;
 
 -- DLQ
-CREATE INDEX idx_failed_notifications_tenant   ON failed_notifications(tenant_id);
-CREATE INDEX idx_failed_notifications_created  ON failed_notifications(created_at DESC);
-CREATE INDEX idx_failed_notifications_channel  ON failed_notifications(channel);
+CREATE INDEX IF NOT EXISTS idx_failed_notifications_tenant  ON failed_notifications(tenant_id);
+CREATE INDEX IF NOT EXISTS idx_failed_notifications_created ON failed_notifications(created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_failed_notifications_channel ON failed_notifications(channel);
 
 -- Templates
-CREATE INDEX idx_notification_templates_tenant  ON notification_templates(tenant_id);
-CREATE INDEX idx_notification_templates_name    ON notification_templates(name);
-CREATE INDEX idx_notification_templates_active  ON notification_templates(is_active);
+CREATE INDEX IF NOT EXISTS idx_notification_templates_tenant ON notification_templates(tenant_id);
+CREATE INDEX IF NOT EXISTS idx_notification_templates_name   ON notification_templates(name);
+CREATE INDEX IF NOT EXISTS idx_notification_templates_active ON notification_templates(is_active);
 
 -- Policies
-CREATE INDEX idx_event_channel_policy_tenant ON event_channel_policy(tenant_id);
-CREATE INDEX idx_retry_policy_tenant         ON retry_policy(tenant_id);
+CREATE INDEX IF NOT EXISTS idx_event_channel_policy_tenant ON event_channel_policy(tenant_id);
+CREATE INDEX IF NOT EXISTS idx_retry_policy_tenant         ON retry_policy(tenant_id);
 
 -- Preferences
-CREATE INDEX idx_user_channel_preferences_tenant  ON user_channel_preferences(tenant_id);
-CREATE INDEX idx_user_channel_preferences_user_id ON user_channel_preferences(user_id);
+CREATE INDEX IF NOT EXISTS idx_user_channel_preferences_tenant  ON user_channel_preferences(tenant_id);
+CREATE INDEX IF NOT EXISTS idx_user_channel_preferences_user_id ON user_channel_preferences(user_id);
 
 -- Audit
-CREATE INDEX idx_admin_audit_logs_tenant   ON admin_audit_logs(tenant_id);
-CREATE INDEX idx_admin_audit_logs_created  ON admin_audit_logs(created_at DESC);
-CREATE INDEX idx_admin_audit_logs_action   ON admin_audit_logs(action);
+CREATE INDEX IF NOT EXISTS idx_admin_audit_logs_tenant  ON admin_audit_logs(tenant_id);
+CREATE INDEX IF NOT EXISTS idx_admin_audit_logs_created ON admin_audit_logs(created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_admin_audit_logs_action  ON admin_audit_logs(action);
 
 -- ============================================================
 -- ROW LEVEL SECURITY
@@ -321,9 +330,9 @@ CREATE POLICY "Failed notifications isolated by tenant"
 CREATE VIEW v_notification_stats AS
 SELECT
     tenant_id,
-    COUNT(*)                                                              AS total_notifications,
-    SUM(CASE WHEN status = 'SENT'   THEN 1 ELSE 0 END)                  AS sent_count,
-    SUM(CASE WHEN status = 'FAILED' THEN 1 ELSE 0 END)                  AS failed_count,
+    COUNT(*)                                                                     AS total_notifications,
+    SUM(CASE WHEN status = 'SENT'   THEN 1 ELSE 0 END)                         AS sent_count,
+    SUM(CASE WHEN status = 'FAILED' THEN 1 ELSE 0 END)                         AS failed_count,
     AVG(CASE WHEN provider_latency_ms IS NOT NULL THEN provider_latency_ms END) AS avg_latency_ms
 FROM notification_logs
 WHERE created_at > NOW() - INTERVAL '24 hours'
@@ -334,8 +343,8 @@ SELECT
     tenant_id,
     channel,
     error_code,
-    COUNT(*)         AS failure_count,
-    MAX(created_at)  AS last_failure_at
+    COUNT(*)        AS failure_count,
+    MAX(created_at) AS last_failure_at
 FROM failed_notifications
 WHERE created_at > NOW() - INTERVAL '7 days'
 GROUP BY tenant_id, channel, error_code;

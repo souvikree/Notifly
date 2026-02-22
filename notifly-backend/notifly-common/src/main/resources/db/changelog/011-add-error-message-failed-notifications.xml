@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<databaseChangeLog xmlns="http://www.liquibase.org/xml/ns/dbchangelog"
+    xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+    xsi:schemaLocation="
+        http://www.liquibase.org/xml/ns/dbchangelog
+        http://www.liquibase.org/xml/ns/dbchangelog/dbchangelog-4.23.xsd">
+
+    <changeSet id="023-add-error-message-to-failed-notifications" author="notifly">
+
+        <preConditions onFail="MARK_RAN">
+            <not>
+                <columnExists tableName="failed_notifications" columnName="error_message"/>
+            </not>
+        </preConditions>
+
+        <addColumn tableName="failed_notifications">
+            <column name="error_message" type="TEXT"/>
+        </addColumn>
+
+    </changeSet>
+
+</databaseChangeLog>

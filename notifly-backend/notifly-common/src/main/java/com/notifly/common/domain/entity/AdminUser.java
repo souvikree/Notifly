@@ -14,16 +14,17 @@ import java.util.UUID;
 /**
  * Admin user — supports BOTH email/password and Google OAuth.
  *
- * For email users:  passwordHash is set, googleId is null
+ * For email users: passwordHash is set, googleId is null
  * For Google users: googleId is set, passwordHash is null
- * For linked users: both are set (user registered with email, then linked Google)
+ * For linked users: both are set (user registered with email, then linked
+ * Google)
  *
  * authProvider tracks the ORIGINAL sign-up method.
  */
 @Entity
 @Table(name = "admin_users", indexes = {
-    @Index(name = "idx_admin_tenant_email",   columnList = "tenant_id,email"),
-    @Index(name = "idx_admin_google_id",       columnList = "google_id")
+    @Index(name = "idx_admin_tenant_email", columnList = "tenant_id,email"),
+    @Index(name = "idx_admin_google_id", columnList = "google_id")
 })
 @Data
 @Builder
@@ -35,13 +36,12 @@ public class AdminUser {
     @GeneratedValue(strategy = GenerationType.UUID)
     private UUID id;
 
-    @Column(nullable = false)
+    @Column(name = "tenant_id", nullable = false)
     private UUID tenantId;
 
     @Column(nullable = false)
     private String email;
 
-    // Nullable — Google-only users don't have a password
     @Column
     private String passwordHash;
 
@@ -51,16 +51,13 @@ public class AdminUser {
     @Column(nullable = false)
     private String lastName;
 
-    // "LOCAL" | "GOOGLE" | "LINKED"
     @Column(nullable = false)
     @Builder.Default
     private String authProvider = "LOCAL";
 
-    // Google's stable user ID (sub field from ID token)
     @Column(unique = true)
     private String googleId;
 
-    // Google profile picture URL (optional, shown in sidebar avatar)
     @Column
     private String avatarUrl;
 

@@ -10,6 +10,7 @@ import org.hibernate.annotations.UpdateTimestamp;
 import org.hibernate.annotations.JdbcTypeCode;
 import org.hibernate.type.SqlTypes;
 
+import java.math.BigDecimal;
 import java.time.Instant;
 import java.util.UUID;
 
@@ -29,7 +30,7 @@ public class RetryPolicy {
     @GeneratedValue(strategy = GenerationType.UUID)
     private UUID id;
 
-    @Column(nullable = false)
+    @Column(name = "tenant_id", nullable = false)
     private UUID tenantId;
 
     @Column(nullable = false)
@@ -41,8 +42,8 @@ public class RetryPolicy {
     @Column(nullable = false)
     private Long initialDelayMs;  // e.g., 1000 (1 second)
 
-    @Column(nullable = false)
-    private Double backoffMultiplier;  // e.g., 5.0 (exponential backoff)
+    @Column(name = "backoff_multiplier", nullable = false)
+    private BigDecimal backoffMultiplier;
 
     @CreationTimestamp
     @Column(nullable = false, updatable = false)

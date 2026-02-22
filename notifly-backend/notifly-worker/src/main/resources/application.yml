@@ -11,6 +11,11 @@ spring:
       maximum-pool-size: ${HIKARI_MAX_POOL_SIZE:5}
       minimum-idle: 2
       connection-timeout: 30000
+      idle-timeout: 600000
+      max-lifetime: 1800000
+      data-source-properties:
+        prepareThreshold: 0
+        preparedStatementCacheQueries: 0
 
   jpa:
     hibernate:
@@ -20,6 +25,20 @@ spring:
         dialect: org.hibernate.dialect.PostgreSQLDialect
     show-sql: false
     open-in-view: false
+
+  # ── Liquibase fully disabled on worker ───────────────────────────────────
+  # Migrations run only from notifly-api.
+  # Must also set change-log to a dummy path to prevent Spring Boot from
+  # looking for the default "db/changelog/db.changelog-master.yaml" and
+  # failing even when enabled=false (Spring Boot bug in some versions).
+  liquibase:
+    enabled: false
+    change-log: classpath:db/changelog/db.changelog-master.xml
+
+  # ── Exclude Liquibase autoconfiguration entirely as a safety net ─────────
+  autoconfigure:
+    exclude:
+      - org.springframework.boot.autoconfigure.liquibase.LiquibaseAutoConfiguration
 
   data:
     redis:
@@ -31,6 +50,8 @@ spring:
         pool:
           max-active: 8
           max-idle: 4
+          min-idle: 1
+          max-wait: 1000
 
   kafka:
     bootstrap-servers: ${KAFKA_BOOTSTRAP_SERVERS:localhost:9092}
@@ -75,7 +96,6 @@ notifly:
       retry-30s: notification.retry.30s
       dlq: notification.dlq
 
-  # Channel providers
   sendgrid:
     api-key: ${SENDGRID_API_KEY:}
     from-email: ${SENDGRID_FROM_EMAIL:noreply@notifly.com}

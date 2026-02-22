@@ -20,24 +20,13 @@ import java.io.IOException;
 import java.util.List;
 import java.util.Optional;
 
-/**
- * API Key authentication filter.
- * Processes Authorization: ApiKey nf_live_xxxxxxx headers.
- *
- * Key format: nf_live_{prefix}
- * - prefix is stored in DB for fast lookup
- * - full key is bcrypt-compared against stored hash
- *
- * Sets principal = tenantId (UUID string).
- * Sets credentials = apiKeyId (UUID string) for audit.
- */
 @Slf4j
 @Component
 @RequiredArgsConstructor
 public class ApiKeyAuthFilter extends OncePerRequestFilter {
 
     private static final String API_KEY_PREFIX = "ApiKey ";
-    private static final int KEY_PREFIX_LENGTH = 16; // "nf_live_" + 8 chars for prefix lookup
+    private static final int KEY_PREFIX_LENGTH = 16;
 
     private final ApiKeyRepository apiKeyRepository;
     private final PasswordEncoder passwordEncoder;
@@ -50,9 +39,8 @@ public class ApiKeyAuthFilter extends OncePerRequestFilter {
 
         if (authHeader != null && authHeader.startsWith(API_KEY_PREFIX)) {
             String rawKey = authHeader.substring(API_KEY_PREFIX.length()).trim();
-
             try {
-                authenticateWithApiKey(rawKey, request);
+                authenticateWithApiKey(rawKey);
             } catch (Exception e) {
                 log.warn("API key authentication failed: {}", e.getMessage());
             }
@@ -61,15 +49,13 @@ public class ApiKeyAuthFilter extends OncePerRequestFilter {
         filterChain.doFilter(request, response);
     }
 
-    private void authenticateWithApiKey(String rawKey, HttpServletRequest request) {
-        // Extract prefix for DB lookup (first KEY_PREFIX_LENGTH chars)
+    private void authenticateWithApiKey(String rawKey) {
         if (rawKey.length() < KEY_PREFIX_LENGTH) {
             log.warn("API key too short");
             return;
         }
 
-        String keyPrefix = rawKey.substring(0, Math.min(KEY_PREFIX_LENGTH, rawKey.length()));
-
+        String keyPrefix = rawKey.substring(0, KEY_PREFIX_LENGTH);
         Optional<ApiKey> apiKeyOpt = apiKeyRepository.findValidByKeyPrefix(keyPrefix);
 
         if (apiKeyOpt.isEmpty()) {
@@ -79,18 +65,18 @@ public class ApiKeyAuthFilter extends OncePerRequestFilter {
 
         ApiKey apiKey = apiKeyOpt.get();
 
-        // Validate via bcrypt
         if (!passwordEncoder.matches(rawKey, apiKey.getKeyHash())) {
             log.warn("API key hash mismatch for prefix: {}", keyPrefix);
             return;
         }
 
-        // Build authorities from ApiKey role
+        // role is now a plain String ("ADMIN" or "SERVICE") — no .name() needed
+        String roleValue = apiKey.getRole() != null ? apiKey.getRole().toUpperCase() : "SERVICE";
+
         List<SimpleGrantedAuthority> authorities = List.of(
-                new SimpleGrantedAuthority("ROLE_" + apiKey.getRole().name())
+                new SimpleGrantedAuthority("ROLE_" + roleValue)
         );
 
-        // Principal = tenantId, credentials = apiKey entity (for downstream access)
         UsernamePasswordAuthenticationToken authentication =
                 new UsernamePasswordAuthenticationToken(
                         apiKey.getTenantId().toString(),
@@ -99,8 +85,7 @@ public class ApiKeyAuthFilter extends OncePerRequestFilter {
                 );
 
         SecurityContextHolder.getContext().setAuthentication(authentication);
-
-        log.debug("API key auth successful: tenantId={}, role={}", apiKey.getTenantId(), apiKey.getRole());
+        log.debug("API key auth successful: tenantId={}, role={}", apiKey.getTenantId(), roleValue);
     }
 
     @Override

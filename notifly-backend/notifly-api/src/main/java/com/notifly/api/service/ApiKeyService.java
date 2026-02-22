@@ -14,23 +14,14 @@ import java.time.Instant;
 import java.util.Base64;
 import java.util.UUID;
 
-/**
- * Manages API key lifecycle: generation, validation, revocation.
- *
- * Key format: nf_live_{16_char_prefix}{32_char_random_suffix}
- * - prefix  → stored plaintext for O(1) DB lookup
- * - full key → bcrypt hashed for secure storage
- *
- * The raw key is returned ONCE at creation time and never again.
- */
 @Slf4j
 @Service
 @RequiredArgsConstructor
 public class ApiKeyService {
 
     private static final String KEY_PREFIX = "nf_live_";
-    private static final int PREFIX_SUFFIX_LENGTH = 8;   // chars after nf_live_
-    private static final int RANDOM_PART_LENGTH = 32;    // chars of random suffix
+    private static final int PREFIX_SUFFIX_LENGTH = 8;
+    private static final int RANDOM_PART_LENGTH = 32;
     private static final SecureRandom SECURE_RANDOM = new SecureRandom();
 
     private final ApiKeyRepository apiKeyRepository;
@@ -40,26 +31,26 @@ public class ApiKeyService {
 
     @Transactional
     public CreatedApiKey createApiKey(UUID tenantId, String displayName, ApiKey.ApiKeyRole role) {
-        // Generate cryptographically secure key
         byte[] prefixBytes = new byte[6];
         byte[] randomBytes = new byte[24];
         SECURE_RANDOM.nextBytes(prefixBytes);
         SECURE_RANDOM.nextBytes(randomBytes);
 
-        String prefixSuffix = Base64.getUrlEncoder().withoutPadding().encodeToString(prefixBytes)
-                .substring(0, PREFIX_SUFFIX_LENGTH);
-        String randomPart = Base64.getUrlEncoder().withoutPadding().encodeToString(randomBytes)
-                .substring(0, RANDOM_PART_LENGTH);
+        String prefixSuffix = Base64.getUrlEncoder().withoutPadding()
+                .encodeToString(prefixBytes).substring(0, PREFIX_SUFFIX_LENGTH);
+        String randomPart = Base64.getUrlEncoder().withoutPadding()
+                .encodeToString(randomBytes).substring(0, RANDOM_PART_LENGTH);
 
-        String rawKey = KEY_PREFIX + prefixSuffix + randomPart;
-        String keyPrefix = KEY_PREFIX + prefixSuffix; // stored for lookup
+        String rawKey   = KEY_PREFIX + prefixSuffix + randomPart;
+        String keyPrefix = KEY_PREFIX + prefixSuffix;
 
         ApiKey apiKey = ApiKey.builder()
                 .tenantId(tenantId)
                 .keyHash(passwordEncoder.encode(rawKey))
                 .keyPrefix(keyPrefix)
                 .displayName(displayName)
-                .role(role)
+                // role is String in the entity now — store the enum name as a string
+                .role(role != null ? role.name() : ApiKey.ApiKeyRole.SERVICE.name())
                 .build();
 
         apiKey = apiKeyRepository.save(apiKey);
@@ -78,6 +69,7 @@ public class ApiKeyService {
         }
 
         key.setRevokedAt(Instant.now());
+        key.setRevoked(true);
         apiKeyRepository.save(key);
         log.info("API key revoked: keyId={}, tenantId={}", keyId, tenantId);
     }

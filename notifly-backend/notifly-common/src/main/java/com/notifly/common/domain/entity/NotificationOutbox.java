@@ -21,27 +21,44 @@ import java.util.UUID;
 @NoArgsConstructor
 @AllArgsConstructor
 public class NotificationOutbox {
+
     @Id
     private UUID id;
 
-    @Column(nullable = false)
+    @Column(name = "tenant_id", nullable = false)
     private UUID tenantId;
 
-    @Column(nullable = false)
+    // ── DB column is UUID type, not VARCHAR ───────────────────────────────
+    // Must declare columnDefinition = "uuid" so Hibernate validation passes.
+    // The field stays as String so existing code (OutboxPublisher, NotificationService)
+    // that sets aggregateId = requestId.toString() continues to work —
+    // Hibernate handles the String→UUID conversion transparently via the
+    // @Column(columnDefinition="uuid") hint.
+    @Column(name = "aggregate_id", nullable = false, columnDefinition = "uuid")
     private String aggregateId;
 
-    @Column(columnDefinition = "JSONB", nullable = false)
+    // ── eventPayload is JSONB in the database ─────────────────────────────
+    @Column(name = "event_payload", columnDefinition = "jsonb", nullable = false)
     private String eventPayload;
 
     @Column(nullable = false)
     @Enumerated(EnumType.STRING)
     private OutboxStatus status;
 
+    @Column(name = "retry_count")
+    private Integer retryCount;
+
+    @Column(name = "last_error", columnDefinition = "TEXT")
+    private String lastError;
+
+    @Column(name = "sent_at")
+    private Instant sentAt;
+
     @CreationTimestamp
-    @Column(nullable = false, updatable = false)
+    @Column(name = "created_at", nullable = false, updatable = false)
     private Instant createdAt;
 
-    @Column(nullable = false)
+    @Column(name = "updated_at", nullable = false)
     private Instant updatedAt;
 
     @ManyToOne(fetch = FetchType.LAZY)
@@ -52,6 +69,9 @@ public class NotificationOutbox {
     public void prePersist() {
         if (this.id == null) {
             this.id = UUID.randomUUID();
+        }
+        if (this.retryCount == null) {
+            this.retryCount = 0;
         }
         this.updatedAt = Instant.now();
     }

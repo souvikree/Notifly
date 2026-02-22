@@ -13,7 +13,7 @@ import java.util.UUID;
 public interface NotificationRequestRepository extends JpaRepository<NotificationRequest, UUID> {
 
     @Query("SELECT nr FROM NotificationRequest nr WHERE nr.tenantId = ?1 AND nr.requestId = ?2")
-    Optional<NotificationRequest> findByTenantIdAndRequestId(UUID tenantId, String requestId);
+    Optional<NotificationRequest> findByTenantIdAndRequestId(UUID tenantId, UUID requestId);
 
     @Query("SELECT nr FROM NotificationRequest nr WHERE nr.tenantId = ?1 AND nr.idempotencyKey = ?2")
     Optional<NotificationRequest> findByTenantIdAndIdempotencyKey(UUID tenantId, String idempotencyKey);

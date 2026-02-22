@@ -6,6 +6,7 @@ import lombok.Builder;
 import lombok.Data;
 import lombok.NoArgsConstructor;
 import org.hibernate.annotations.CreationTimestamp;
+import org.hibernate.annotations.UpdateTimestamp;
 
 import java.time.Instant;
 import java.util.UUID;
@@ -20,23 +21,30 @@ import java.util.UUID;
 @NoArgsConstructor
 @AllArgsConstructor
 public class RateLimitConfig {
+
     @Id
     private UUID id;
 
-    @Column(nullable = false)
+    @Column(name = "tenant_id", nullable = false)
     private UUID tenantId;
 
     @Column(nullable = false)
     private Integer requestsPerMinute;
 
+    // DB has this column — was missing from entity
+    @Column(nullable = false)
+    @Builder.Default
+    private Integer requestsPerHour = 50000;
+
     @Column(nullable = false)
     private Integer burstLimit;
 
     @CreationTimestamp
-    @Column(nullable = false, updatable = false)
+    @Column(name = "created_at", nullable = false, updatable = false)
     private Instant createdAt;
 
-    @Column(nullable = false)
+    @UpdateTimestamp
+    @Column(name = "updated_at", nullable = false)
     private Instant updatedAt;
 
     @ManyToOne(fetch = FetchType.LAZY)
@@ -48,11 +56,5 @@ public class RateLimitConfig {
         if (this.id == null) {
             this.id = UUID.randomUUID();
         }
-        this.updatedAt = Instant.now();
-    }
-
-    @PreUpdate
-    public void preUpdate() {
-        this.updatedAt = Instant.now();
     }
 }

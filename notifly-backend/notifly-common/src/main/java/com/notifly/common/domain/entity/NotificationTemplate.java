@@ -11,14 +11,16 @@ import org.hibernate.annotations.UpdateTimestamp;
 import java.time.Instant;
 import java.util.UUID;
 
-/**
- * Notification templates for multi-channel delivery
- */
 @Entity
-@Table(name = "notification_templates", indexes = {
-    @Index(name = "idx_template_tenant_name", columnList = "tenant_id,name"),
-    @Index(name = "idx_template_active", columnList = "active")
-})
+@Table(name = "notification_templates",
+    uniqueConstraints = {
+        @UniqueConstraint(columnNames = {"tenant_id", "name", "version"})
+    },
+    indexes = {
+        @Index(name = "idx_template_tenant_name", columnList = "tenant_id,name"),
+        @Index(name = "idx_template_active", columnList = "is_active")
+    }
+)
 @Data
 @Builder
 @NoArgsConstructor
@@ -29,36 +31,47 @@ public class NotificationTemplate {
     @GeneratedValue(strategy = GenerationType.UUID)
     private UUID id;
 
-    @Column(nullable = false)
+    @Column(name = "tenant_id", nullable = false)
     private UUID tenantId;
 
     @Column(nullable = false)
     private String name;
 
     @Column(nullable = false)
-    private Integer version;
+    @Builder.Default
+    private Integer version = 1;
 
     @Column(nullable = false)
-    private String channel;  // EMAIL, SMS, PUSH
+    private String channel;
 
-    // ✅ ADD THIS FIELD
     @Column
-    private String subject;  // Needed for EMAIL templates
+    private String subject;
 
     @Column(columnDefinition = "TEXT", nullable = false)
     private String content;
 
-    @Column(nullable = false)
-    private Boolean active;
+    // DB column is "variables jsonb"
+    @Column(name = "variables", columnDefinition = "jsonb")
+    private String variables;
+
+    // DB column is "is_active" — must match exactly
+    @Column(name = "is_active", nullable = false)
+    @Builder.Default
+    private Boolean isActive = true;
+
+    // DB column is "created_by uuid"
+    @Column(name = "created_by", columnDefinition = "uuid")
+    private UUID createdBy;
 
     @CreationTimestamp
-    @Column(nullable = false, updatable = false)
+    @Column(name = "created_at", nullable = false, updatable = false)
     private Instant createdAt;
 
     @UpdateTimestamp
+    @Column(name = "updated_at")
     private Instant updatedAt;
 
-    @ManyToOne
+    @ManyToOne(fetch = FetchType.LAZY)
     @JoinColumn(name = "tenant_id", insertable = false, updatable = false)
     private Tenant tenant;
 }

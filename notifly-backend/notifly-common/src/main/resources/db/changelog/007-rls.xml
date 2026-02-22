@@ -1,0 +1,58 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<databaseChangeLog
+        xmlns="http://www.liquibase.org/xml/ns/dbchangelog"
+        xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+        xsi:schemaLocation="
+        http://www.liquibase.org/xml/ns/dbchangelog
+        http://www.liquibase.org/xml/ns/dbchangelog/dbchangelog-3.8.xsd">
+
+    <changeSet id="018-enable-rls" author="notifly">
+        <sql>
+
+            ALTER TABLE tenants                  ENABLE ROW LEVEL SECURITY;
+            ALTER TABLE api_keys                 ENABLE ROW LEVEL SECURITY;
+            ALTER TABLE admin_users              ENABLE ROW LEVEL SECURITY;
+            ALTER TABLE notification_requests    ENABLE ROW LEVEL SECURITY;
+            ALTER TABLE notification_logs        ENABLE ROW LEVEL SECURITY;
+            ALTER TABLE failed_notifications     ENABLE ROW LEVEL SECURITY;
+            ALTER TABLE notification_templates   ENABLE ROW LEVEL SECURITY;
+            ALTER TABLE event_channel_policy     ENABLE ROW LEVEL SECURITY;
+            ALTER TABLE retry_policy             ENABLE ROW LEVEL SECURITY;
+            ALTER TABLE rate_limit_config        ENABLE ROW LEVEL SECURITY;
+            ALTER TABLE user_channel_preferences ENABLE ROW LEVEL SECURITY;
+            ALTER TABLE admin_audit_logs         ENABLE ROW LEVEL SECURITY;
+            ALTER TABLE notification_outbox      ENABLE ROW LEVEL SECURITY;
+            ALTER TABLE retry_attempts           ENABLE ROW LEVEL SECURITY;
+
+        </sql>
+    </changeSet>
+
+    <!-- Tenant Isolation Policies -->
+
+    <changeSet id="019-create-rls-policies" author="notifly">
+        <sql>
+
+            CREATE POLICY "Tenants isolated by ID"
+            ON tenants FOR ALL
+            USING (auth.uid()::text = id::text OR auth.role() = 'service_role');
+
+            CREATE POLICY "API keys isolated by tenant"
+            ON api_keys FOR ALL
+            USING (tenant_id = auth.uid()::uuid OR auth.role() = 'service_role');
+
+            CREATE POLICY "Notification requests isolated by tenant"
+            ON notification_requests FOR ALL
+            USING (tenant_id = auth.uid()::uuid OR auth.role() = 'service_role');
+
+            CREATE POLICY "Notification logs isolated by tenant"
+            ON notification_logs FOR ALL
+            USING (tenant_id = auth.uid()::uuid OR auth.role() = 'service_role');
+
+            CREATE POLICY "Failed notifications isolated by tenant"
+            ON failed_notifications FOR ALL
+            USING (tenant_id = auth.uid()::uuid OR auth.role() = 'service_role');
+
+        </sql>
+    </changeSet>
+
+</databaseChangeLog>

@@ -24,15 +24,6 @@ import java.util.Map;
 import java.util.Optional;
 import java.util.UUID;
 
-/**
- * Core notification submission service.
- *
- * FIXED from original:
- * - submitNotification() signature now matches NotificationController call
- * (takes tenantId string, request, idempotencyKey, correlationId)
- * - getNotificationStatus() now implemented
- * - recipientAddress extracted properly from recipient map
- */
 @Slf4j
 @Service
 @RequiredArgsConstructor
@@ -44,10 +35,6 @@ public class NotificationService {
     private final IdempotencyService idempotencyService;
     private final ObjectMapper objectMapper;
 
-    /**
-     * Submit a notification request.
-     * Validates → idempotency check → persist → outbox → return ACCEPTED.
-     */
     @Transactional
     public NotificationResponseDTO submitNotification(
             String tenantIdStr,
@@ -58,17 +45,17 @@ public class NotificationService {
         UUID tenantId = UUID.fromString(tenantIdStr);
         CorrelationIdContext.setCorrelationId(correlationId);
 
-        // Extract recipient address from map
         String recipientAddress = extractRecipientAddress(request);
 
-        // Check idempotency key
+        // Idempotency check
         if (idempotencyKey != null) {
-            Optional<NotificationRequest> existing = requestRepository.findByTenantIdAndIdempotencyKey(tenantId,
-                    idempotencyKey);
+            Optional<NotificationRequest> existing =
+                requestRepository.findByTenantIdAndIdempotencyKey(tenantId, idempotencyKey);
             if (existing.isPresent()) {
                 log.info("[{}] Idempotent request for key: {}", correlationId, idempotencyKey);
                 return NotificationResponseDTO.builder()
-                        .requestId(existing.get().getRequestId())
+                        // requestId in entity is UUID — convert to String for DTO
+                        .requestId(existing.get().getRequestId().toString())
                         .status(NotificationStatus.ACCEPTED.name())
                         .message("Request accepted (duplicate)")
                         .correlationId(correlationId)
@@ -80,25 +67,25 @@ public class NotificationService {
             UUID requestId = request.getRequestId() != null
                     ? UUID.fromString(request.getRequestId())
                     : UUID.randomUUID();
+
             String payloadJson = objectMapper.writeValueAsString(request);
             String payloadHash = computeHash(payloadJson);
 
-            // Persist notification_request
+            // requestId is UUID in the entity — pass directly
+            // userId and recipientAddress removed (don't exist in DB)
             NotificationRequest notifRequest = NotificationRequest.builder()
                     .tenantId(tenantId)
-                    .requestId(requestId.toString())
+                    .requestId(requestId)           // UUID
                     .idempotencyKey(idempotencyKey)
                     .payloadHash(payloadHash)
                     .payload(payloadJson)
                     .eventType(request.getEventType())
-                    .userId(request.getUserId())
-                    .recipientAddress(recipientAddress)
+                    .status("PENDING")
                     .build();
 
             requestRepository.save(notifRequest);
             log.debug("[{}] Notification request saved: {}", correlationId, requestId);
 
-            // Build Kafka event
             KafkaNotificationEvent kafkaEvent = KafkaNotificationEvent.builder()
                     .requestId(requestId)
                     .tenantId(tenantId)
@@ -111,7 +98,6 @@ public class NotificationService {
                     .createdAt(System.currentTimeMillis())
                     .build();
 
-            // Transactional Outbox: write to DB atomically with request
             NotificationOutbox outbox = NotificationOutbox.builder()
                     .tenantId(tenantId)
                     .aggregateId(requestId.toString())
@@ -123,17 +109,16 @@ public class NotificationService {
             log.debug("[{}] Outbox entry created for: {}", correlationId, requestId);
 
             return NotificationResponseDTO.builder()
-                    .requestId(requestId.toString())
+                    .requestId(requestId.toString())    // DTO expects String
                     .status(NotificationStatus.ACCEPTED.name())
                     .message("Notification request accepted")
                     .correlationId(correlationId)
                     .build();
 
         } catch (DataIntegrityViolationException e) {
-            // Duplicate constraint hit - return existing
             log.info("[{}] Duplicate detected via DB constraint", correlationId);
             return NotificationResponseDTO.builder()
-                    .requestId(request.getRequestId())
+                    .requestId(request.getRequestId())  // already a String from DTO
                     .status(NotificationStatus.ACCEPTED.name())
                     .message("Request accepted (duplicate)")
                     .correlationId(correlationId)
@@ -145,27 +130,24 @@ public class NotificationService {
         }
     }
 
-    /**
-     * Get notification status by requestId (scoped to tenant).
-     */
     public Map<String, Object> getNotificationStatus(String tenantIdStr, String requestId) {
         UUID tenantId = UUID.fromString(tenantIdStr);
+        UUID requestUUID = UUID.fromString(requestId);
 
-        Optional<NotificationRequest> request = requestRepository.findByTenantIdAndRequestId(tenantId, requestId);
+        // findByTenantIdAndRequestId now takes UUID for both args
+        Optional<NotificationRequest> request =
+            requestRepository.findByTenantIdAndRequestId(tenantId, requestUUID);
 
         if (request.isEmpty()) {
-            return Map.of(
-                    "requestId", requestId,
-                    "status", "NOT_FOUND");
+            return Map.of("requestId", requestId, "status", "NOT_FOUND");
         }
 
-        var logs = logRepository.findByTenantIdAndRequestId(tenantId, UUID.fromString(requestId));
+        var logs = logRepository.findByTenantIdAndRequestId(tenantId, requestUUID);
 
         return Map.of(
                 "requestId", requestId,
-                "status",
-                logs.isEmpty() ? "PENDING"
-                        : logs.stream().anyMatch(l -> "SUCCESS".equals(l.getStatus())) ? "DELIVERED" : "FAILED",
+                "status", logs.isEmpty() ? "PENDING"
+                        : logs.stream().anyMatch(l -> "SENT".equals(l.getStatus())) ? "DELIVERED" : "FAILED",
                 "deliveryLogs", logs,
                 "createdAt", request.get().getCreatedAt());
     }
@@ -174,7 +156,6 @@ public class NotificationService {
         if (request.getRecipient() == null || request.getRecipient().isEmpty()) {
             throw new ValidationException("recipient map is required");
         }
-        // Priority: email → phone → deviceToken
         return request.getRecipient().getOrDefault("email",
                 request.getRecipient().getOrDefault("phone",
                         request.getRecipient().getOrDefault("deviceToken", "")));
@@ -185,7 +166,7 @@ public class NotificationService {
             MessageDigest digest = MessageDigest.getInstance("SHA-256");
             return Base64.getEncoder().encodeToString(digest.digest(input.getBytes()));
         } catch (Exception e) {
-            return UUID.randomUUID().toString(); // Fallback
+            return UUID.randomUUID().toString();
         }
     }
 }

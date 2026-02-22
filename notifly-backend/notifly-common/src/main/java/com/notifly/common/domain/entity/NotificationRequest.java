@@ -6,6 +6,7 @@ import lombok.Builder;
 import lombok.Data;
 import lombok.NoArgsConstructor;
 import org.hibernate.annotations.CreationTimestamp;
+import org.hibernate.annotations.UpdateTimestamp;
 
 import java.time.Instant;
 import java.util.UUID;
@@ -14,7 +15,6 @@ import java.util.UUID;
 @Table(name = "notification_requests",
         uniqueConstraints = {
                 @UniqueConstraint(columnNames = {"tenant_id", "request_id"}),
-                @UniqueConstraint(columnNames = {"tenant_id", "idempotency_key"})
         },
         indexes = {
                 @Index(name = "idx_tenant_request", columnList = "tenant_id,request_id"),
@@ -26,36 +26,40 @@ import java.util.UUID;
 @NoArgsConstructor
 @AllArgsConstructor
 public class NotificationRequest {
+
     @Id
     private UUID id;
 
-    @Column(nullable = false)
+    @Column(name = "tenant_id", nullable = false)
     private UUID tenantId;
 
-    @Column(nullable = false)
-    private String requestId;
+    // DB column is UUID type — must declare columnDefinition
+    @Column(name = "request_id", nullable = false, columnDefinition = "uuid")
+    private UUID requestId;
 
-    @Column(nullable = false)
+    @Column(name = "idempotency_key")
     private String idempotencyKey;
 
-    @Column(nullable = false)
+    @Column(name = "payload_hash")
     private String payloadHash;
 
-    @Column(columnDefinition = "JSONB", nullable = false)
+    @Column(columnDefinition = "jsonb", nullable = false)
     private String payload;
 
-    @Column(nullable = false)
+    @Column(name = "event_type", nullable = false)
     private String eventType;
 
     @Column(nullable = false)
-    private String userId;
-
-    @Column(nullable = false)
-    private String recipientAddress;
+    @Builder.Default
+    private String status = "PENDING";
 
     @CreationTimestamp
-    @Column(nullable = false, updatable = false)
+    @Column(name = "created_at", nullable = false, updatable = false)
     private Instant createdAt;
+
+    @UpdateTimestamp
+    @Column(name = "updated_at")
+    private Instant updatedAt;
 
     @ManyToOne(fetch = FetchType.LAZY)
     @JoinColumn(name = "tenant_id", referencedColumnName = "id", insertable = false, updatable = false)

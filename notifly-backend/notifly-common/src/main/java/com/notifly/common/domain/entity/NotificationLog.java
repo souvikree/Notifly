@@ -11,9 +11,6 @@ import org.hibernate.annotations.UpdateTimestamp;
 import java.time.Instant;
 import java.util.UUID;
 
-/**
- * Notification logs - tracks delivery attempts per channel
- */
 @Entity
 @Table(name = "notification_logs", indexes = {
     @Index(name = "idx_tenant_request_channel", columnList = "tenant_id,request_id,channel"),
@@ -29,39 +26,46 @@ import java.util.UUID;
 @NoArgsConstructor
 @AllArgsConstructor
 public class NotificationLog {
+
     @Id
     @GeneratedValue(strategy = GenerationType.UUID)
     private UUID id;
 
-    @Column(nullable = false)
+    @Column(name = "tenant_id", nullable = false)
     private UUID tenantId;
 
-    @Column(nullable = false)
+    // DB column is UUID type
+    @Column(name = "request_id", nullable = false, columnDefinition = "uuid")
     private UUID requestId;
 
     @Column(nullable = false)
-    private String channel;  // EMAIL, SMS, PUSH
+    private String channel;
 
     @Column(nullable = false)
-    private String status;  // SUCCESS, FAILED, PENDING
+    private String status;
 
-    @Column(nullable = false)
+    @Column(name = "retry_attempt", nullable = false)
     private Integer retryAttempt;
 
-    @Column
+    @Column(name = "provider_latency_ms")
     private Long providerLatencyMs;
 
-    @Column(columnDefinition = "TEXT")
+    // Both error_message and error_details are TEXT in the DB (confirmed from schema)
+    @Column(name = "error_message", columnDefinition = "TEXT")
+    private String errorMessage;
+
+    @Column(name = "error_details", columnDefinition = "TEXT")
     private String errorDetails;
 
     @CreationTimestamp
-    @Column(nullable = false, updatable = false)
+    @Column(name = "created_at", nullable = false, updatable = false)
     private Instant createdAt;
 
     @UpdateTimestamp
+    @Column(name = "updated_at")
     private Instant updatedAt;
 
-    @ManyToOne
+    @ManyToOne(fetch = FetchType.LAZY)
     @JoinColumn(name = "tenant_id", insertable = false, updatable = false)
     private Tenant tenant;
 }

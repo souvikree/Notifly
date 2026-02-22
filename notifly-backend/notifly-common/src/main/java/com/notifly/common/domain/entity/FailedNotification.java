@@ -7,17 +7,10 @@ import lombok.Data;
 import lombok.NoArgsConstructor;
 import org.hibernate.annotations.CreationTimestamp;
 import org.hibernate.annotations.UpdateTimestamp;
-import org.hibernate.annotations.JdbcTypeCode;
-import org.hibernate.type.SqlTypes;
-import com.fasterxml.jackson.databind.JsonNode;
 
 import java.time.Instant;
-import java.util.List;
 import java.util.UUID;
 
-/**
- * Failed notifications - Dead Letter Queue
- */
 @Entity
 @Table(name = "failed_notifications", indexes = {
     @Index(name = "idx_failed_tenant", columnList = "tenant_id"),
@@ -28,40 +21,59 @@ import java.util.UUID;
 @NoArgsConstructor
 @AllArgsConstructor
 public class FailedNotification {
+
     @Id
     @GeneratedValue(strategy = GenerationType.UUID)
     private UUID id;
 
-    @Column(nullable = false)
+    @Column(name = "tenant_id", nullable = false)
     private UUID tenantId;
 
-    @Column(nullable = false)
+    // DB column is UUID type
+    @Column(name = "request_id", nullable = false, columnDefinition = "uuid")
     private UUID requestId;
 
     @Column(nullable = false)
     private String channel;
 
-    @Column(nullable = false)
+    @Column(columnDefinition = "TEXT")
     private String recipient;
 
-    @Column(nullable = false)
-    private Integer retryAttempt;
+    @Column(name = "retry_attempt", nullable = false)
+    @Builder.Default
+    private Integer retryAttempt = 0;
 
-    @Column(nullable = false)
+    @Column(name = "error_code")
     private String errorCode;
 
-    @Column(columnDefinition = "TEXT")
+    @Column(name = "error_message", columnDefinition = "TEXT")
     private String errorMessage;
 
-    @JdbcTypeCode(SqlTypes.JSON)
-    @Column(columnDefinition = "jsonb")
-    private JsonNode errorDetails;
+    // DB column is JSONB — stored as String, Hibernate maps via columnDefinition
+    @Column(name = "error_details", columnDefinition = "jsonb")
+    private String errorDetails;
+
+    // DB column is UUID type
+    @Column(name = "notification_log_id", columnDefinition = "uuid")
+    private UUID notificationLogId;
+
+    @Column(name = "manual_retry_attempted")
+    @Builder.Default
+    private Boolean manualRetryAttempted = false;
+
+    @Column(name = "manual_retry_count")
+    @Builder.Default
+    private Integer manualRetryCount = 0;
 
     @CreationTimestamp
-    @Column(nullable = false, updatable = false)
+    @Column(name = "created_at", nullable = false, updatable = false)
     private Instant createdAt;
 
-    @ManyToOne
+    @UpdateTimestamp
+    @Column(name = "updated_at")
+    private Instant updatedAt;
+
+    @ManyToOne(fetch = FetchType.LAZY)
     @JoinColumn(name = "tenant_id", insertable = false, updatable = false)
     private Tenant tenant;
 }

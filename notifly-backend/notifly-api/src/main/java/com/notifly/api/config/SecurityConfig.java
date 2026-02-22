@@ -2,6 +2,7 @@ package com.notifly.api.config;
 
 import com.notifly.api.security.ApiKeyAuthFilter;
 import com.notifly.api.security.JwtAuthFilter;
+import com.notifly.api.security.TenantFilter;
 import lombok.RequiredArgsConstructor;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
@@ -25,11 +26,12 @@ import java.util.List;
 /**
  * Spring Security configuration for Notifly API.
  *
- * Two authentication paths:
- *  - JWT Bearer token  → Admin dashboard users
- *  - ApiKey header     → Service-to-service (nf_live_xxx)
+ * Filter order (left = runs first):
+ *   ApiKeyAuthFilter → JwtAuthFilter → TenantFilter → ...
  *
- * Public endpoints: /api/v1/auth/**, /actuator/health, /actuator/prometheus
+ * ApiKeyAuthFilter: checks Authorization: ApiKey nf_live_xxx
+ * JwtAuthFilter:    checks Authorization: Bearer <jwt>
+ * TenantFilter:     propagates tenantId into TenantContext from the authenticated principal
  */
 @Configuration
 @EnableWebSecurity
@@ -38,7 +40,8 @@ import java.util.List;
 public class SecurityConfig {
 
     private final JwtAuthFilter jwtAuthFilter;
-    private final ApiKeyAuthFilter apiKeyAuthFilter;
+    // private final ApiKeyAuthFilter apiKeyAuthFilter;
+    private final TenantFilter tenantFilter;
 
     private static final String[] PUBLIC_URLS = {
             "/api/v1/auth/**",
@@ -48,7 +51,7 @@ public class SecurityConfig {
     };
 
     @Bean
-    public SecurityFilterChain filterChain(HttpSecurity http) throws Exception {
+    public SecurityFilterChain filterChain(HttpSecurity http, ApiKeyAuthFilter apiKeyAuthFilter) throws Exception {
         http
             .cors(cors -> cors.configurationSource(corsConfigurationSource()))
             .csrf(csrf -> csrf.disable())
@@ -57,16 +60,15 @@ public class SecurityConfig {
             .authorizeHttpRequests(auth -> auth
                 .requestMatchers(PUBLIC_URLS).permitAll()
                 .requestMatchers(HttpMethod.OPTIONS, "/**").permitAll()
-                // Admin-only endpoints
                 .requestMatchers("/api/v1/admin/**").hasRole("ADMIN")
-                // Notification submission: ADMIN or SERVICE api key
                 .requestMatchers(HttpMethod.POST, "/api/v1/notifications").hasAnyRole("ADMIN", "SERVICE")
-                .requestMatchers(HttpMethod.GET, "/api/v1/notifications/**").hasAnyRole("ADMIN", "SERVICE")
+                .requestMatchers(HttpMethod.GET,  "/api/v1/notifications/**").hasAnyRole("ADMIN", "SERVICE")
                 .anyRequest().authenticated()
             )
-            // API Key filter runs first (before JWT)
+            // Order: ApiKey → JWT → TenantContext propagation
             .addFilterBefore(apiKeyAuthFilter, UsernamePasswordAuthenticationFilter.class)
-            .addFilterBefore(jwtAuthFilter, ApiKeyAuthFilter.class);
+            .addFilterBefore(jwtAuthFilter,    ApiKeyAuthFilter.class)
+            .addFilterAfter(tenantFilter,      JwtAuthFilter.class);
 
         return http.build();
     }

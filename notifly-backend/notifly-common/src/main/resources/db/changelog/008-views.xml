@@ -1,0 +1,38 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<databaseChangeLog
+        xmlns="http://www.liquibase.org/xml/ns/dbchangelog"
+        xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+        xsi:schemaLocation="
+        http://www.liquibase.org/xml/ns/dbchangelog
+        http://www.liquibase.org/xml/ns/dbchangelog/dbchangelog-3.8.xsd">
+
+    <changeSet id="020-create-analytics-views" author="notifly">
+        <sql>
+
+            CREATE VIEW v_notification_stats AS
+            SELECT
+                tenant_id,
+                COUNT(*) AS total_notifications,
+                SUM(CASE WHEN status = 'SENT'   THEN 1 ELSE 0 END) AS sent_count,
+                SUM(CASE WHEN status = 'FAILED' THEN 1 ELSE 0 END) AS failed_count,
+                AVG(CASE WHEN provider_latency_ms IS NOT NULL
+                         THEN provider_latency_ms END) AS avg_latency_ms
+            FROM notification_logs
+            WHERE created_at > NOW() - INTERVAL '24 hours'
+            GROUP BY tenant_id;
+
+            CREATE VIEW v_failed_notification_summary AS
+            SELECT
+                tenant_id,
+                channel,
+                error_code,
+                COUNT(*) AS failure_count,
+                MAX(created_at) AS last_failure_at
+            FROM failed_notifications
+            WHERE created_at > NOW() - INTERVAL '7 days'
+            GROUP BY tenant_id, channel, error_code;
+
+        </sql>
+    </changeSet>
+
+</databaseChangeLog>

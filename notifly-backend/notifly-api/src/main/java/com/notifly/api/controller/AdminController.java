@@ -20,24 +20,6 @@ import org.springframework.web.bind.annotation.*;
 import java.time.Instant;
 import java.util.*;
 
-/**
- * Admin REST API for the SaaS dashboard.
- *
- * All endpoints require ADMIN role (JWT auth).
- * Scoped to the authenticated tenant via TenantContext.
- *
- * GET  /api/v1/admin/metrics       - dashboard KPIs
- * GET  /api/v1/admin/logs          - notification delivery logs
- * GET  /api/v1/admin/dlq           - dead letter queue entries
- * POST /api/v1/admin/dlq/{id}/retry - manual retry from DLQ
- * GET  /api/v1/admin/api-keys      - list API keys
- * POST /api/v1/admin/api-keys      - create API key
- * DELETE /api/v1/admin/api-keys/{id} - revoke API key
- * GET  /api/v1/admin/templates     - list templates
- * POST /api/v1/admin/templates     - create template
- * PUT  /api/v1/admin/templates/{id} - update template
- * DELETE /api/v1/admin/templates/{id} - delete template
- */
 @Slf4j
 @RestController
 @RequestMapping("/api/v1/admin")
@@ -51,34 +33,31 @@ public class AdminController {
     private final ApiKeyRepository apiKeyRepository;
     private final ApiKeyService apiKeyService;
 
-    // ──────────────────────────────────────────────────────────────────────────
-    // Metrics
-    // ──────────────────────────────────────────────────────────────────────────
+    // ── Metrics ───────────────────────────────────────────────────────────────
 
     @GetMapping("/metrics")
     public ResponseEntity<Map<String, Object>> getMetrics() {
         UUID tenantId = TenantContext.getTenantId();
 
-        long total     = logRepository.countByTenantId(tenantId);
-        long succeeded = logRepository.countByTenantIdAndStatus(tenantId, "SUCCESS");
-        long failed    = logRepository.countByTenantIdAndStatus(tenantId, "FAILED");
-        long dlqCount  = failedNotificationRepository.countByTenantId(tenantId);
+        long total       = logRepository.countByTenantId(tenantId);
+        long succeeded   = logRepository.countByTenantIdAndStatus(tenantId, "SENT");
+        long failed      = logRepository.countByTenantIdAndStatus(tenantId, "FAILED");
+        long dlqCount    = failedNotificationRepository.countByTenantId(tenantId);
         Double avgLatency = logRepository.avgLatencyByTenantId(tenantId);
         Double p99Latency = logRepository.p99LatencyByTenantId(tenantId);
 
         double successRate = total > 0 ? (double) succeeded / total * 100.0 : 0.0;
 
-        // Per-channel breakdown
         Map<String, Long> emailStats = Map.of(
-                "sent",   logRepository.countByTenantIdAndChannelAndStatus(tenantId, "EMAIL", "SUCCESS"),
+                "sent",   logRepository.countByTenantIdAndChannelAndStatus(tenantId, "EMAIL", "SENT"),
                 "failed", logRepository.countByTenantIdAndChannelAndStatus(tenantId, "EMAIL", "FAILED")
         );
         Map<String, Long> smsStats = Map.of(
-                "sent",   logRepository.countByTenantIdAndChannelAndStatus(tenantId, "SMS", "SUCCESS"),
+                "sent",   logRepository.countByTenantIdAndChannelAndStatus(tenantId, "SMS", "SENT"),
                 "failed", logRepository.countByTenantIdAndChannelAndStatus(tenantId, "SMS", "FAILED")
         );
         Map<String, Long> pushStats = Map.of(
-                "sent",   logRepository.countByTenantIdAndChannelAndStatus(tenantId, "PUSH", "SUCCESS"),
+                "sent",   logRepository.countByTenantIdAndChannelAndStatus(tenantId, "PUSH", "SENT"),
                 "failed", logRepository.countByTenantIdAndChannelAndStatus(tenantId, "PUSH", "FAILED")
         );
 
@@ -86,7 +65,7 @@ public class AdminController {
         metrics.put("totalNotifications", total);
         metrics.put("successfulDeliveries", succeeded);
         metrics.put("failedDeliveries", failed);
-        metrics.put("pendingNotifications", 0); // from outbox if needed
+        metrics.put("pendingNotifications", 0);
         metrics.put("dlqCount", dlqCount);
         metrics.put("averageLatency", avgLatency != null ? avgLatency : 0.0);
         metrics.put("p99Latency", p99Latency != null ? p99Latency : 0.0);
@@ -96,9 +75,7 @@ public class AdminController {
         return ResponseEntity.ok(Map.of("metrics", metrics, "timeSeries", List.of()));
     }
 
-    // ──────────────────────────────────────────────────────────────────────────
-    // Notification Logs
-    // ──────────────────────────────────────────────────────────────────────────
+    // ── Notification Logs ─────────────────────────────────────────────────────
 
     @GetMapping("/logs")
     public ResponseEntity<Map<String, Object>> getLogs(
@@ -110,7 +87,6 @@ public class AdminController {
 
         UUID tenantId = TenantContext.getTenantId();
         var pageable = PageRequest.of(page, size, Sort.by(Sort.Direction.DESC, "createdAt"));
-
         var logsPage = logRepository.findByTenantIdWithFilters(tenantId, status, channel, search, pageable);
 
         return ResponseEntity.ok(Map.of(
@@ -122,9 +98,7 @@ public class AdminController {
         ));
     }
 
-    // ──────────────────────────────────────────────────────────────────────────
-    // Dead Letter Queue
-    // ──────────────────────────────────────────────────────────────────────────
+    // ── Dead Letter Queue ─────────────────────────────────────────────────────
 
     @GetMapping("/dlq")
     public ResponseEntity<Map<String, Object>> getDlq(
@@ -134,7 +108,6 @@ public class AdminController {
 
         UUID tenantId = TenantContext.getTenantId();
         var pageable = PageRequest.of(page, size, Sort.by(Sort.Direction.DESC, "createdAt"));
-
         var dlqPage = failedNotificationRepository.findByTenantId(tenantId, pageable);
 
         return ResponseEntity.ok(Map.of(
@@ -148,19 +121,13 @@ public class AdminController {
     @PostMapping("/dlq/{id}/retry")
     public ResponseEntity<Map<String, String>> retryFromDlq(@PathVariable UUID id) {
         UUID tenantId = TenantContext.getTenantId();
-
         var failed = failedNotificationRepository.findByIdAndTenantId(id, tenantId)
                 .orElseThrow(() -> new ValidationException("DLQ entry not found: " + id));
 
-        // Mark as retrying and republish - the ApiKeyService/NotificationService
-        // handles re-publishing to Kafka
         failedNotificationRepository.delete(failed);
         log.info("Manual DLQ retry triggered: id={}, tenantId={}", id, tenantId);
 
-        return ResponseEntity.ok(Map.of(
-                "status", "RETRY_QUEUED",
-                "id", id.toString()
-        ));
+        return ResponseEntity.ok(Map.of("status", "RETRY_QUEUED", "id", id.toString()));
     }
 
     @DeleteMapping("/dlq/{id}")
@@ -170,21 +137,20 @@ public class AdminController {
         return ResponseEntity.noContent().build();
     }
 
-    // ──────────────────────────────────────────────────────────────────────────
-    // API Keys
-    // ──────────────────────────────────────────────────────────────────────────
+    // ── API Keys ──────────────────────────────────────────────────────────────
 
     @GetMapping("/api-keys")
     public ResponseEntity<List<Map<String, Object>>> getApiKeys() {
         UUID tenantId = TenantContext.getTenantId();
+        // findAllByTenantIdAndRevokedAtIsNull still works — revokedAt field still exists
         var keys = apiKeyRepository.findAllByTenantIdAndRevokedAtIsNull(tenantId);
 
         List<Map<String, Object>> response = keys.stream().map(k -> {
             Map<String, Object> map = new LinkedHashMap<>();
             map.put("id", k.getId());
             map.put("displayName", k.getDisplayName());
-            map.put("keyPrefix", k.getKeyPrefix() + "****"); // Never expose full key
-            map.put("role", k.getRole());
+            map.put("keyPrefix", k.getKeyPrefix() + "****");
+            map.put("role", k.getRole());           // String now — no .name() needed
             map.put("createdAt", k.getCreatedAt());
             map.put("revokedAt", k.getRevokedAt());
             return map;
@@ -202,7 +168,7 @@ public class AdminController {
 
         Map<String, Object> response = new LinkedHashMap<>();
         response.put("id", result.apiKey().getId());
-        response.put("key", result.rawKey()); // Only time full key is returned
+        response.put("key", result.rawKey());
         response.put("displayName", result.apiKey().getDisplayName());
         response.put("role", result.apiKey().getRole());
         response.put("createdAt", result.apiKey().getCreatedAt());
@@ -218,9 +184,7 @@ public class AdminController {
         return ResponseEntity.noContent().build();
     }
 
-    // ──────────────────────────────────────────────────────────────────────────
-    // Templates
-    // ──────────────────────────────────────────────────────────────────────────
+    // ── Templates ─────────────────────────────────────────────────────────────
 
     @GetMapping("/templates")
     public ResponseEntity<List<NotificationTemplate>> getTemplates(
@@ -235,7 +199,6 @@ public class AdminController {
             @Valid @RequestBody CreateTemplateRequest request) {
         UUID tenantId = TenantContext.getTenantId();
 
-        // Auto-version: find current max version for this name
         int nextVersion = templateRepository.findMaxVersionByTenantIdAndName(tenantId, request.getName())
                 .map(v -> v + 1).orElse(1);
 
@@ -246,7 +209,7 @@ public class AdminController {
                 .content(request.getContent())
                 .subject(request.getSubject())
                 .version(nextVersion)
-                .active(false) // Draft by default
+                .isActive(false)    // ← was .active() — field is now isActive
                 .build();
 
         return ResponseEntity.status(201).body(templateRepository.save(template));
@@ -263,8 +226,7 @@ public class AdminController {
 
         if (request.getContent() != null) template.setContent(request.getContent());
         if (request.getSubject() != null) template.setSubject(request.getSubject());
-        if (request.getActive() != null) template.setActive(request.getActive());
-
+        if (request.getActive() != null) template.setIsActive(request.getActive()); // ← setIsActive
         return ResponseEntity.ok(templateRepository.save(template));
     }
 
@@ -275,9 +237,7 @@ public class AdminController {
         return ResponseEntity.noContent().build();
     }
 
-    // ──────────────────────────────────────────────────────────────────────────
-    // Request DTOs
-    // ──────────────────────────────────────────────────────────────────────────
+    // ── Request DTOs ──────────────────────────────────────────────────────────
 
     @Data
     public static class CreateApiKeyRequest {

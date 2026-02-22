@@ -1,0 +1,70 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<databaseChangeLog
+        xmlns="http://www.liquibase.org/xml/ns/dbchangelog"
+        xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+        xsi:schemaLocation="
+        http://www.liquibase.org/xml/ns/dbchangelog
+        http://www.liquibase.org/xml/ns/dbchangelog/dbchangelog-3.8.xsd">
+
+    <!-- Notification Logs -->
+    <changeSet id="008-create-notification-logs" author="notifly">
+        <sql>
+            CREATE TABLE notification_logs (
+                id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+                tenant_id UUID NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
+                request_id UUID NOT NULL,
+                channel VARCHAR(50) NOT NULL
+                    CHECK (channel IN ('EMAIL', 'SMS', 'PUSH', 'WEBHOOK')),
+                status VARCHAR(50) NOT NULL
+                    CHECK (status IN ('PENDING', 'SENT', 'FAILED', 'RETRYING')),
+                retry_attempt INT NOT NULL DEFAULT 1,
+                provider_latency_ms BIGINT,
+                error_message TEXT,
+                error_details JSONB,
+                created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+                CONSTRAINT unique_delivery
+                    UNIQUE (tenant_id, request_id, channel, retry_attempt)
+            );
+        </sql>
+    </changeSet>
+
+    <!-- Retry Attempts -->
+    <changeSet id="009-create-retry-attempts" author="notifly">
+        <sql>
+            CREATE TABLE retry_attempts (
+                id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+                tenant_id UUID NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
+                notification_log_id UUID NOT NULL REFERENCES notification_logs(id) ON DELETE CASCADE,
+                attempt_number INT NOT NULL,
+                retry_count INT NOT NULL DEFAULT 0,
+                max_retries INT NOT NULL DEFAULT 5,
+                next_retry_at TIMESTAMP WITH TIME ZONE,
+                error_code VARCHAR(100),
+                error_message TEXT,
+                created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+            );
+        </sql>
+    </changeSet>
+
+    <!-- Dead Letter Queue -->
+    <changeSet id="010-create-failed-notifications" author="notifly">
+        <sql>
+            CREATE TABLE failed_notifications (
+                id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+                tenant_id UUID NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
+                request_id UUID NOT NULL,
+                channel VARCHAR(50) NOT NULL,
+                error_code VARCHAR(100),
+                error_details JSONB,
+                notification_log_id UUID REFERENCES notification_logs(id) ON DELETE SET NULL,
+                manual_retry_attempted BOOLEAN DEFAULT FALSE,
+                manual_retry_count INT DEFAULT 0,
+                created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+            );
+        </sql>
+    </changeSet>
+
+</databaseChangeLog>

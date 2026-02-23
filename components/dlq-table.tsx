@@ -27,7 +27,7 @@ import {
 } from "@/components/ui/alert-dialog";
 import { useDlqNotifications, useDlqRetry, useMarkUnrecoverable } from "@/lib/hooks";
 import { mockDlqItems, paginateData } from "@/lib/mock-data";
-import type { FailedNotification, NotificationChannel } from "@/lib/types";
+import type { FailedNotification, NotificationChannel, PaginatedResponse } from "@/lib/types";
 import { formatDistanceToNow } from "date-fns";
 import { motion, AnimatePresence } from "framer-motion";
 import {
@@ -48,20 +48,43 @@ interface DlqTableProps {
   onPageChange: (page: number) => void;
 }
 
+const EMPTY_RESULT: PaginatedResponse<FailedNotification> = {
+  content: [],
+  totalElements: 0,
+  totalPages: 0,
+  page: 0,
+  size: 10,
+};
+
 export function DlqTable({ search, channel, isUnrecoverable, page, onPageChange }: DlqTableProps) {
-  const { data, isLoading } = useDlqNotifications({ search, channel, isUnrecoverable, page, size: 10 });
+  const { data, isLoading, isError } = useDlqNotifications({
+    search,
+    channel,
+    isUnrecoverable,
+    page,
+    size: 10,
+  });
 
-  let filtered = mockDlqItems;
-  if (search) {
-    const q = search.toLowerCase();
-    filtered = filtered.filter(
-      (i) => i.requestId.toLowerCase().includes(q) || i.errorMessage.toLowerCase().includes(q)
-    );
-  }
-  if (channel) filtered = filtered.filter((i) => i.channel === channel);
-  if (isUnrecoverable !== undefined) filtered = filtered.filter((i) => i.isUnrecoverable === isUnrecoverable);
+  const getMockResult = (): PaginatedResponse<FailedNotification> => {
+    let filtered = [...mockDlqItems];
+    if (search) {
+      const q = search.toLowerCase();
+      filtered = filtered.filter(
+        (i) => i.requestId.toLowerCase().includes(q) || i.errorMessage.toLowerCase().includes(q)
+      );
+    }
+    if (channel) filtered = filtered.filter((i) => i.channel === channel);
+    if (isUnrecoverable !== undefined)
+      filtered = filtered.filter((i) => i.isUnrecoverable === isUnrecoverable);
+    return paginateData(filtered, page, 10);
+  };
 
-  const result = data || paginateData(filtered, page, 10);
+  const rawResult = data ?? (isError ? getMockResult() : undefined);
+  const result: PaginatedResponse<FailedNotification> = {
+    ...EMPTY_RESULT,
+    ...rawResult,
+    content: rawResult?.content ?? [],
+  };
 
   if (isLoading && !data) return <TableSkeleton rows={5} cols={6} />;
 
@@ -107,11 +130,23 @@ export function DlqTable({ search, channel, isUnrecoverable, page, onPageChange 
             Showing {result.content.length} of {result.totalElements}
           </p>
           <div className="flex items-center gap-2">
-            <Button variant="outline" size="sm" onClick={() => onPageChange(Math.max(0, page - 1))} disabled={page === 0}>
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => onPageChange(Math.max(0, page - 1))}
+              disabled={page === 0}
+            >
               <ChevronLeft className="h-4 w-4" />
             </Button>
-            <span className="text-sm text-muted-foreground">Page {page + 1} of {Math.max(1, result.totalPages)}</span>
-            <Button variant="outline" size="sm" onClick={() => onPageChange(page + 1)} disabled={page >= result.totalPages - 1}>
+            <span className="text-sm text-muted-foreground">
+              Page {page + 1} of {Math.max(1, result.totalPages)}
+            </span>
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => onPageChange(page + 1)}
+              disabled={page >= result.totalPages - 1}
+            >
               <ChevronRight className="h-4 w-4" />
             </Button>
           </div>
@@ -130,26 +165,48 @@ function DlqRow({ item }: { item: FailedNotification }) {
 
   return (
     <>
-      <TableRow className="cursor-pointer border-border/50 hover:bg-accent/30" onClick={() => setExpanded(!expanded)}>
+      <TableRow
+        className="cursor-pointer border-border/50 hover:bg-accent/30"
+        onClick={() => setExpanded(!expanded)}
+      >
         <TableCell>
-          {expanded ? <ChevronUp className="h-4 w-4 text-muted-foreground" /> : <ChevronDown className="h-4 w-4 text-muted-foreground" />}
+          {expanded ? (
+            <ChevronUp className="h-4 w-4 text-muted-foreground" />
+          ) : (
+            <ChevronDown className="h-4 w-4 text-muted-foreground" />
+          )}
         </TableCell>
-        <TableCell className="font-mono text-xs text-foreground">{item.requestId.slice(0, 12)}...</TableCell>
-        <TableCell className="max-w-[140px] truncate text-sm text-foreground">{item.recipient}</TableCell>
-        <TableCell><ChannelBadge channel={item.channel} /></TableCell>
+        <TableCell className="font-mono text-xs text-foreground">
+          {item.requestId.slice(0, 12)}...
+        </TableCell>
+        <TableCell className="max-w-[140px] truncate text-sm text-foreground">
+          {item.recipient}
+        </TableCell>
         <TableCell>
-          <Badge variant="outline" className="border-destructive/30 bg-destructive/10 font-mono text-xs text-destructive">
+          <ChannelBadge channel={item.channel} />
+        </TableCell>
+        <TableCell>
+          <Badge
+            variant="outline"
+            className="border-destructive/30 bg-destructive/10 font-mono text-xs text-destructive"
+          >
             {item.errorCode}
           </Badge>
         </TableCell>
         <TableCell>
           {item.isUnrecoverable ? (
-            <Badge variant="outline" className="border-muted-foreground/30 bg-muted text-muted-foreground">
+            <Badge
+              variant="outline"
+              className="border-muted-foreground/30 bg-muted text-muted-foreground"
+            >
               <Ban className="mr-1 h-3 w-3" />
               Unrecoverable
             </Badge>
           ) : (
-            <Badge variant="outline" className="border-warning/30 bg-warning/10 text-warning">
+            <Badge
+              variant="outline"
+              className="border-warning/30 bg-warning/10 text-warning"
+            >
               Pending Review
             </Badge>
           )}
@@ -158,14 +215,27 @@ function DlqRow({ item }: { item: FailedNotification }) {
           {formatDistanceToNow(new Date(item.createdAt), { addSuffix: true })}
         </TableCell>
         <TableCell className="text-right">
-          <div className="flex items-center justify-end gap-1" onClick={(e) => e.stopPropagation()}>
+          <div
+            className="flex items-center justify-end gap-1"
+            onClick={(e) => e.stopPropagation()}
+          >
             {!item.isUnrecoverable && (
               <>
-                <Button variant="ghost" size="sm" onClick={() => setShowRetryDialog(true)} className="text-primary hover:text-primary">
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  onClick={() => setShowRetryDialog(true)}
+                  className="text-primary hover:text-primary"
+                >
                   <RotateCcw className="mr-1 h-3 w-3" />
                   Retry
                 </Button>
-                <Button variant="ghost" size="sm" onClick={() => setShowMarkDialog(true)} className="text-muted-foreground hover:text-destructive">
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  onClick={() => setShowMarkDialog(true)}
+                  className="text-muted-foreground hover:text-destructive"
+                >
                   <Ban className="mr-1 h-3 w-3" />
                   Mark
                 </Button>
@@ -198,10 +268,21 @@ function DlqRow({ item }: { item: FailedNotification }) {
                     </pre>
                   </div>
                   <div className="flex gap-4 text-xs text-muted-foreground">
-                    <span>User: <span className="font-mono text-foreground">{item.userId}</span></span>
-                    <span>Retries: <span className="text-foreground">{item.retryCount}</span></span>
+                    <span>
+                      User:{" "}
+                      <span className="font-mono text-foreground">{item.userId}</span>
+                    </span>
+                    <span>
+                      Retries:{" "}
+                      <span className="text-foreground">{item.retryCount}</span>
+                    </span>
                     {item.lastRetryAt && (
-                      <span>Last retry: <span className="text-foreground">{formatDistanceToNow(new Date(item.lastRetryAt), { addSuffix: true })}</span></span>
+                      <span>
+                        Last retry:{" "}
+                        <span className="text-foreground">
+                          {formatDistanceToNow(new Date(item.lastRetryAt), { addSuffix: true })}
+                        </span>
+                      </span>
                     )}
                   </div>
                 </div>
@@ -211,19 +292,24 @@ function DlqRow({ item }: { item: FailedNotification }) {
         )}
       </AnimatePresence>
 
-      {/* Retry Confirmation Dialog */}
       <AlertDialog open={showRetryDialog} onOpenChange={setShowRetryDialog}>
         <AlertDialogContent className="bg-card border-border">
           <AlertDialogHeader>
-            <AlertDialogTitle className="text-card-foreground">Retry this notification?</AlertDialogTitle>
+            <AlertDialogTitle className="text-card-foreground">
+              Retry this notification?
+            </AlertDialogTitle>
             <AlertDialogDescription>
-              This will re-queue the notification for delivery. It will go through the normal retry pipeline.
-              <br /><br />
+              This will re-queue the notification for delivery. It will go through the normal retry
+              pipeline.
+              <br />
+              <br />
               <span className="font-mono text-xs">{item.requestId}</span>
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
-            <AlertDialogCancel className="bg-secondary text-secondary-foreground">Cancel</AlertDialogCancel>
+            <AlertDialogCancel className="bg-secondary text-secondary-foreground">
+              Cancel
+            </AlertDialogCancel>
             <AlertDialogAction onClick={() => retryMutation.mutate(item.id)}>
               Confirm Retry
             </AlertDialogAction>
@@ -231,17 +317,21 @@ function DlqRow({ item }: { item: FailedNotification }) {
         </AlertDialogContent>
       </AlertDialog>
 
-      {/* Mark Unrecoverable Dialog */}
       <AlertDialog open={showMarkDialog} onOpenChange={setShowMarkDialog}>
         <AlertDialogContent className="bg-card border-border">
           <AlertDialogHeader>
-            <AlertDialogTitle className="text-card-foreground">Mark as unrecoverable?</AlertDialogTitle>
+            <AlertDialogTitle className="text-card-foreground">
+              Mark as unrecoverable?
+            </AlertDialogTitle>
             <AlertDialogDescription>
-              This notification will be permanently marked as unrecoverable and will not be retried again. This action cannot be undone.
+              This notification will be permanently marked as unrecoverable and will not be retried
+              again. This action cannot be undone.
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
-            <AlertDialogCancel className="bg-secondary text-secondary-foreground">Cancel</AlertDialogCancel>
+            <AlertDialogCancel className="bg-secondary text-secondary-foreground">
+              Cancel
+            </AlertDialogCancel>
             <AlertDialogAction
               onClick={() => markMutation.mutate(item.id)}
               className="bg-destructive text-destructive-foreground hover:bg-destructive/90"

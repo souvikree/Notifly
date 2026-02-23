@@ -25,6 +25,11 @@ export function useDashboardMetrics(period?: string) {
     queryKey: ["dashboard", "metrics", period],
     queryFn: () => dashboardService.getMetrics(period),
     refetchInterval: 30000,
+    // Keep previous data visible while refetching
+    placeholderData: (prev) => prev,
+    // Don't throw on error — let the component handle isError
+    throwOnError: false,
+    retry: 1,
   });
 }
 
@@ -33,6 +38,9 @@ export function useNotificationLogs(filters: NotificationLogFilters) {
   return useQuery({
     queryKey: ["notifications", "logs", filters],
     queryFn: () => notificationService.getLogs(filters),
+    placeholderData: (prev) => prev,
+    throwOnError: false,
+    retry: 1,
   });
 }
 
@@ -41,6 +49,8 @@ export function useNotificationLog(id: string) {
     queryKey: ["notifications", "logs", id],
     queryFn: () => notificationService.getLogById(id),
     enabled: !!id,
+    throwOnError: false,
+    retry: 1,
   });
 }
 
@@ -61,6 +71,9 @@ export function useDlqNotifications(filters: DlqFilters) {
   return useQuery({
     queryKey: ["dlq", filters],
     queryFn: () => dlqService.getFailedNotifications(filters),
+    placeholderData: (prev) => prev,
+    throwOnError: false,
+    retry: 1,
   });
 }
 
@@ -105,6 +118,9 @@ export function useTemplates(filters: TemplateFilters) {
   return useQuery({
     queryKey: ["templates", filters],
     queryFn: () => templateService.getTemplates(filters),
+    placeholderData: (prev) => prev,
+    throwOnError: false,
+    retry: 1,
   });
 }
 
@@ -113,6 +129,8 @@ export function useTemplate(id: string) {
     queryKey: ["templates", id],
     queryFn: () => templateService.getById(id),
     enabled: !!id,
+    throwOnError: false,
+    retry: 1,
   });
 }
 
@@ -121,6 +139,8 @@ export function useTemplateVersions(id: string) {
     queryKey: ["templates", id, "versions"],
     queryFn: () => templateService.getVersionHistory(id),
     enabled: !!id,
+    throwOnError: false,
+    retry: 1,
   });
 }
 
@@ -139,7 +159,8 @@ export function useCreateTemplate() {
 export function useUpdateTemplate() {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: ({ id, data }: { id: string; data: UpdateTemplateRequest }) => templateService.update(id, data),
+    mutationFn: ({ id, data }: { id: string; data: UpdateTemplateRequest }) =>
+      templateService.update(id, data),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ["templates"] });
       toast.success("Template updated.");
@@ -177,6 +198,8 @@ export function useApiKeys() {
   return useQuery({
     queryKey: ["api-keys"],
     queryFn: () => apiKeyService.getKeys(),
+    throwOnError: false,
+    retry: 1,
   });
 }
 
@@ -208,6 +231,8 @@ export function useSettings() {
   return useQuery({
     queryKey: ["settings"],
     queryFn: () => settingsService.getSettings(),
+    throwOnError: false,
+    retry: 1,
   });
 }
 

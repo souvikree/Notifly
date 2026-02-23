@@ -72,7 +72,7 @@ spring:
       value-serializer: org.springframework.kafka.support.serializer.JsonSerializer
 
 server:
-  port: ${PORT:8081}
+  port: ${WORKER_PORT:8081}
 
 management:
   endpoints:

@@ -5,7 +5,6 @@ import { usePathname } from "next/navigation";
 import { cn } from "@/lib/utils";
 import { useAuth } from "@/lib/auth-context";
 import {
-  Bell,
   LayoutDashboard,
   ScrollText,
   AlertTriangle,
@@ -15,6 +14,7 @@ import {
   LogOut,
   ChevronLeft,
 } from "lucide-react";
+import { BrandLogo } from "@/components/BrandLogo";
 import { Button } from "@/components/ui/button";
 import { Separator } from "@/components/ui/separator";
 import { Avatar, AvatarFallback } from "@/components/ui/avatar";
@@ -45,10 +45,10 @@ export function AppSidebar({ collapsed, onToggle }: AppSidebarProps) {
 
   const initials = user?.name
     ? user.name
-        .split(" ")
-        .map((n) => n[0])
-        .join("")
-        .toUpperCase()
+      .split(" ")
+      .map((n) => n[0])
+      .join("")
+      .toUpperCase()
     : "AD";
 
   return (
@@ -60,26 +60,54 @@ export function AppSidebar({ collapsed, onToggle }: AppSidebarProps) {
         )}
       >
         {/* Logo */}
-        <div className="flex h-16 items-center gap-3 px-4">
-          <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-sidebar-primary">
-            <Bell className="h-4 w-4 text-sidebar-primary-foreground" />
-          </div>
+        <div className="group relative flex h-16 items-center gap-3 px-4">
+
+          {/* Clickable Logo */}
+          <Link href="/dashboard" className="relative">
+            <div className="relative">
+
+              {/* Soft Animated Glow */}
+              <div className="absolute inset-0 rounded-xl bg-gradient-to-br from-emerald-400/30 via-cyan-400/20 to-indigo-500/30 blur-md opacity-60 transition-all duration-500 group-hover:opacity-100 group-hover:blur-lg" />
+
+              {/* Logo */}
+              <div className="relative">
+                <BrandLogo
+                  variant="image"
+                  size={34}
+                  className="transition-transform duration-300 group-hover:scale-110"
+                />
+              </div>
+
+            </div>
+          </Link>
+
+          {/* Brand Text */}
           {!collapsed && (
-            <span className="text-lg font-bold tracking-tight text-sidebar-foreground">
-              Notifly
-            </span>
+            <div className="flex flex-col leading-tight">
+              <span className="text-lg font-semibold tracking-tight text-sidebar-foreground">
+                Notifly
+              </span>
+              <span className="text-[10px] uppercase tracking-widest text-sidebar-foreground/40">
+                notification engine
+              </span>
+            </div>
           )}
+
+          {/* Toggle Button */}
           <Button
             variant="ghost"
             size="icon"
             onClick={onToggle}
             className={cn(
-              "ml-auto h-7 w-7 text-sidebar-foreground/60 hover:text-sidebar-foreground",
+              "ml-auto h-7 w-7 text-sidebar-foreground/50 hover:text-sidebar-foreground transition-colors",
               collapsed && "ml-0"
             )}
           >
             <ChevronLeft
-              className={cn("h-4 w-4 transition-transform", collapsed && "rotate-180")}
+              className={cn(
+                "h-4 w-4 transition-transform duration-300",
+                collapsed && "rotate-180"
+              )}
             />
             <span className="sr-only">Toggle sidebar</span>
           </Button>

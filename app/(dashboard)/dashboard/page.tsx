@@ -22,17 +22,37 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
+import type { DashboardMetrics } from "@/lib/types";
+
+// Safe default — guarantees all numeric fields are never undefined
+const DEFAULT_METRICS: DashboardMetrics = {
+  totalNotifications: 0,
+  successRate: 0,
+  failureRate: 0,
+  avgDeliveryTimeMs: 0,
+  p99LatencyMs: 0,
+  dlqCount: 0,
+  channelBreakdown: [],
+  dailyStats: [],
+};
 
 export default function DashboardPage() {
   const [period, setPeriod] = useState("7d");
-  const { data, isLoading } = useDashboardMetrics(period);
+  const { data, isLoading, isError } = useDashboardMetrics(period);
 
-  const metrics = data || mockDashboardMetrics;
+  // Priority: real API data → mock data (dev/demo) → safe zeros
+  const metrics: DashboardMetrics = {
+    ...DEFAULT_METRICS,
+    ...(data ?? (isError ? mockDashboardMetrics : DEFAULT_METRICS)),
+  };
 
-  if (isLoading && !metrics) {
+  if (isLoading) {
     return (
       <div className="space-y-6">
-        <PageHeader title="Dashboard" description="Overview of your notification infrastructure" />
+        <PageHeader
+          title="Dashboard"
+          description="Overview of your notification infrastructure"
+        />
         <DashboardSkeleton />
       </div>
     );
@@ -57,21 +77,17 @@ export default function DashboardPage() {
         </Select>
       </PageHeader>
 
-      {/*
-        Metric Cards Grid
-        ─────────────────
-        • 1 col on mobile (stacked)
-        • 2 cols on sm (≥640px)
-        • 3 cols on lg (≥1024px)
-        • 3 cols on xl too — 6 equal cols was too narrow, cards looked crushed
-        
-        Each MetricCard gets an `index` prop so animations stagger nicely.
-      */}
+      {isError && (
+        <div className="rounded-md border border-yellow-200 bg-yellow-50 px-4 py-3 text-sm text-yellow-800 dark:border-yellow-800 dark:bg-yellow-950 dark:text-yellow-200">
+          Could not reach the API — showing demo data. Make sure the backend is running on port 8080.
+        </div>
+      )}
+
       <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
         <MetricCard
           index={0}
           title="Total Notifications"
-          value={metrics.totalNotifications.toLocaleString()}
+          value={(metrics.totalNotifications ?? 0).toLocaleString()}
           icon={Bell}
           trend={{ value: 12.5, label: "vs last period" }}
           variant="default"
@@ -79,7 +95,7 @@ export default function DashboardPage() {
         <MetricCard
           index={1}
           title="Success Rate"
-          value={`${metrics.successRate}%`}
+          value={`${metrics.successRate ?? 0}%`}
           icon={CheckCircle}
           trend={{ value: 0.3, label: "vs last period" }}
           variant="success"
@@ -87,7 +103,7 @@ export default function DashboardPage() {
         <MetricCard
           index={2}
           title="Failure Rate"
-          value={`${metrics.failureRate}%`}
+          value={`${metrics.failureRate ?? 0}%`}
           icon={XCircle}
           trend={{ value: -0.3, label: "vs last period" }}
           variant="destructive"
@@ -95,7 +111,7 @@ export default function DashboardPage() {
         <MetricCard
           index={3}
           title="Avg Delivery"
-          value={`${metrics.avgDeliveryTimeMs}ms`}
+          value={`${metrics.avgDeliveryTimeMs ?? 0}ms`}
           icon={Clock}
           subtitle="Mean delivery time"
           variant="default"
@@ -103,7 +119,7 @@ export default function DashboardPage() {
         <MetricCard
           index={4}
           title="P99 Latency"
-          value={`${metrics.p99LatencyMs}ms`}
+          value={`${metrics.p99LatencyMs ?? 0}ms`}
           icon={Gauge}
           subtitle="99th percentile"
           variant="warning"
@@ -111,14 +127,13 @@ export default function DashboardPage() {
         <MetricCard
           index={5}
           title="DLQ Count"
-          value={metrics.dlqCount.toLocaleString()}
+          value={(metrics.dlqCount ?? 0).toLocaleString()}
           icon={AlertTriangle}
           subtitle="Pending review"
           variant="destructive"
         />
       </div>
 
-      {/* Charts */}
       <DashboardCharts metrics={metrics} />
     </div>
   );

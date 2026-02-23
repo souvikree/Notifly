@@ -10,7 +10,7 @@ import { TableSkeleton } from "@/components/loading-states";
 import { CreateTemplateDialog } from "@/components/create-template-dialog";
 import { useTemplates, usePublishTemplate, useDeactivateTemplate } from "@/lib/hooks";
 import { mockTemplates, paginateData } from "@/lib/mock-data";
-import type { NotificationChannel, TemplateStatus, NotificationTemplate } from "@/lib/types";
+import type { NotificationChannel, TemplateStatus, NotificationTemplate, PaginatedResponse } from "@/lib/types";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
@@ -50,6 +50,14 @@ import {
 import { formatDistanceToNow } from "date-fns";
 import { motion } from "framer-motion";
 
+const EMPTY_RESULT: PaginatedResponse<NotificationTemplate> = {
+  content: [],
+  totalElements: 0,
+  totalPages: 0,
+  page: 0,
+  size: 10,
+};
+
 export default function TemplatesPage() {
   const [search, setSearch] = useState("");
   const [channel, setChannel] = useState<NotificationChannel | "ALL">("ALL");
@@ -57,7 +65,7 @@ export default function TemplatesPage() {
   const [page, setPage] = useState(0);
   const [showCreate, setShowCreate] = useState(false);
 
-  const { data, isLoading } = useTemplates({
+  const { data, isLoading, isError } = useTemplates({
     search: search || undefined,
     channel: channel === "ALL" ? undefined : channel,
     status: status === "ALL" ? undefined : status,
@@ -68,15 +76,24 @@ export default function TemplatesPage() {
   const publishMutation = usePublishTemplate();
   const deactivateMutation = useDeactivateTemplate();
 
-  let filtered = mockTemplates;
-  if (search) {
-    const q = search.toLowerCase();
-    filtered = filtered.filter((t) => t.name.toLowerCase().includes(q));
-  }
-  if (channel !== "ALL") filtered = filtered.filter((t) => t.channel === channel);
-  if (status !== "ALL") filtered = filtered.filter((t) => t.status === status);
+  const getMockResult = (): PaginatedResponse<NotificationTemplate> => {
+    let filtered = [...mockTemplates];
+    if (search) {
+      const q = search.toLowerCase();
+      filtered = filtered.filter((t) => t.name.toLowerCase().includes(q));
+    }
+    if (channel !== "ALL") filtered = filtered.filter((t) => t.channel === channel);
+    if (status !== "ALL") filtered = filtered.filter((t) => t.status === status);
+    return paginateData(filtered, page, 10);
+  };
 
-  const result = data || paginateData(filtered, page, 10);
+  const rawResult = data ?? (isError ? getMockResult() : undefined);
+  const result: PaginatedResponse<NotificationTemplate> = {
+    ...EMPTY_RESULT,
+    ...rawResult,
+    content: rawResult?.content ?? [],
+  };
+
   const hasFilters = search || channel !== "ALL" || status !== "ALL";
 
   if (isLoading && !data) {
@@ -90,7 +107,10 @@ export default function TemplatesPage() {
 
   return (
     <div className="space-y-6">
-      <PageHeader title="Templates" description="Create and manage notification templates for all channels">
+      <PageHeader
+        title="Templates"
+        description="Create and manage notification templates for all channels"
+      >
         <Button onClick={() => setShowCreate(true)}>
           <Plus className="mr-2 h-4 w-4" />
           Create Template
@@ -104,11 +124,20 @@ export default function TemplatesPage() {
           <Input
             placeholder="Search templates..."
             value={search}
-            onChange={(e) => { setSearch(e.target.value); setPage(0); }}
+            onChange={(e) => {
+              setSearch(e.target.value);
+              setPage(0);
+            }}
             className="bg-secondary pl-9"
           />
         </div>
-        <Select value={channel} onValueChange={(v) => { setChannel(v as NotificationChannel | "ALL"); setPage(0); }}>
+        <Select
+          value={channel}
+          onValueChange={(v) => {
+            setChannel(v as NotificationChannel | "ALL");
+            setPage(0);
+          }}
+        >
           <SelectTrigger className="w-[140px] bg-secondary">
             <SelectValue />
           </SelectTrigger>
@@ -119,7 +148,13 @@ export default function TemplatesPage() {
             <SelectItem value="PUSH">Push</SelectItem>
           </SelectContent>
         </Select>
-        <Select value={status} onValueChange={(v) => { setStatus(v as TemplateStatus | "ALL"); setPage(0); }}>
+        <Select
+          value={status}
+          onValueChange={(v) => {
+            setStatus(v as TemplateStatus | "ALL");
+            setPage(0);
+          }}
+        >
           <SelectTrigger className="w-[140px] bg-secondary">
             <SelectValue />
           </SelectTrigger>
@@ -131,7 +166,17 @@ export default function TemplatesPage() {
           </SelectContent>
         </Select>
         {hasFilters && (
-          <Button variant="ghost" size="sm" onClick={() => { setSearch(""); setChannel("ALL"); setStatus("ALL"); setPage(0); }} className="text-muted-foreground">
+          <Button
+            variant="ghost"
+            size="sm"
+            onClick={() => {
+              setSearch("");
+              setChannel("ALL");
+              setStatus("ALL");
+              setPage(0);
+            }}
+            className="text-muted-foreground"
+          >
             <X className="mr-1 h-3 w-3" />
             Clear
           </Button>
@@ -154,7 +199,11 @@ export default function TemplatesPage() {
           </CardContent>
         </Card>
       ) : (
-        <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} transition={{ duration: 0.3 }}>
+        <motion.div
+          initial={{ opacity: 0 }}
+          animate={{ opacity: 1 }}
+          transition={{ duration: 0.3 }}
+        >
           <Card className="border-border/50 bg-card">
             <CardContent className="p-0">
               <Table>
@@ -171,32 +220,53 @@ export default function TemplatesPage() {
                 </TableHeader>
                 <TableBody>
                   {result.content.map((template: NotificationTemplate) => (
-                    <TableRow key={template.id} className="border-border/50 hover:bg-accent/30">
+                    <TableRow
+                      key={template.id}
+                      className="border-border/50 hover:bg-accent/30"
+                    >
                       <TableCell>
-                        <Link href={`/templates/${template.id}`} className="font-medium text-foreground hover:text-primary">
+                        <Link
+                          href={`/templates/${template.id}`}
+                          className="font-medium text-foreground hover:text-primary"
+                        >
                           {template.name}
                         </Link>
                         {template.subject && (
-                          <p className="mt-0.5 max-w-[200px] truncate text-xs text-muted-foreground">{template.subject}</p>
+                          <p className="mt-0.5 max-w-[200px] truncate text-xs text-muted-foreground">
+                            {template.subject}
+                          </p>
                         )}
                       </TableCell>
-                      <TableCell><ChannelBadge channel={template.channel} /></TableCell>
-                      <TableCell><StatusBadge status={template.status} /></TableCell>
-                      <TableCell className="text-sm text-foreground">v{template.version}</TableCell>
+                      <TableCell>
+                        <ChannelBadge channel={template.channel} />
+                      </TableCell>
+                      <TableCell>
+                        <StatusBadge status={template.status} />
+                      </TableCell>
+                      <TableCell className="text-sm text-foreground">
+                        v{template.version}
+                      </TableCell>
                       <TableCell>
                         <div className="flex flex-wrap gap-1">
-                          {template.variables.slice(0, 3).map((v) => (
-                            <span key={v} className="rounded bg-secondary px-1.5 py-0.5 font-mono text-xs text-muted-foreground">
+                          {(template.variables ?? []).slice(0, 3).map((v) => (
+                            <span
+                              key={v}
+                              className="rounded bg-secondary px-1.5 py-0.5 font-mono text-xs text-muted-foreground"
+                            >
                               {`{{${v}}}`}
                             </span>
                           ))}
-                          {template.variables.length > 3 && (
-                            <span className="text-xs text-muted-foreground">+{template.variables.length - 3}</span>
+                          {(template.variables ?? []).length > 3 && (
+                            <span className="text-xs text-muted-foreground">
+                              +{template.variables.length - 3}
+                            </span>
                           )}
                         </div>
                       </TableCell>
                       <TableCell className="text-sm text-muted-foreground">
-                        {formatDistanceToNow(new Date(template.updatedAt), { addSuffix: true })}
+                        {formatDistanceToNow(new Date(template.updatedAt), {
+                          addSuffix: true,
+                        })}
                       </TableCell>
                       <TableCell>
                         <DropdownMenu>
@@ -214,13 +284,18 @@ export default function TemplatesPage() {
                               </Link>
                             </DropdownMenuItem>
                             {template.status === "DRAFT" && (
-                              <DropdownMenuItem onClick={() => publishMutation.mutate(template.id)}>
+                              <DropdownMenuItem
+                                onClick={() => publishMutation.mutate(template.id)}
+                              >
                                 <Upload className="mr-2 h-4 w-4" />
                                 Publish
                               </DropdownMenuItem>
                             )}
                             {template.status === "PUBLISHED" && (
-                              <DropdownMenuItem onClick={() => deactivateMutation.mutate(template.id)} className="text-destructive focus:text-destructive">
+                              <DropdownMenuItem
+                                onClick={() => deactivateMutation.mutate(template.id)}
+                                className="text-destructive focus:text-destructive"
+                              >
                                 <XCircle className="mr-2 h-4 w-4" />
                                 Deactivate
                               </DropdownMenuItem>
@@ -238,11 +313,23 @@ export default function TemplatesPage() {
                   Showing {result.content.length} of {result.totalElements}
                 </p>
                 <div className="flex items-center gap-2">
-                  <Button variant="outline" size="sm" onClick={() => setPage(Math.max(0, page - 1))} disabled={page === 0}>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={() => setPage(Math.max(0, page - 1))}
+                    disabled={page === 0}
+                  >
                     <ChevronLeft className="h-4 w-4" />
                   </Button>
-                  <span className="text-sm text-muted-foreground">Page {page + 1} of {Math.max(1, result.totalPages)}</span>
-                  <Button variant="outline" size="sm" onClick={() => setPage(page + 1)} disabled={page >= result.totalPages - 1}>
+                  <span className="text-sm text-muted-foreground">
+                    Page {page + 1} of {Math.max(1, result.totalPages)}
+                  </span>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={() => setPage(page + 1)}
+                    disabled={page >= result.totalPages - 1}
+                  >
                     <ChevronRight className="h-4 w-4" />
                   </Button>
                 </div>

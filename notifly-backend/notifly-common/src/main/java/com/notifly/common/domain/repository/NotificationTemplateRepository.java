@@ -13,7 +13,9 @@ import java.util.UUID;
 
 @Repository
 public interface NotificationTemplateRepository extends JpaRepository<NotificationTemplate, UUID> {
-    List<NotificationTemplate> findByTenantIdAndNameAndActive(UUID tenantId, String name, Boolean active);
+
+    // "active" renamed to "isActive" to match the entity field name
+    List<NotificationTemplate> findByTenantIdAndNameAndIsActive(UUID tenantId, String name, Boolean isActive);
 
     Optional<NotificationTemplate> findByTenantIdAndNameAndVersionAndChannel(
             UUID tenantId, String name, Integer version, String channel);

@@ -18,7 +18,7 @@ import { TableSkeleton } from "@/components/loading-states";
 import { RetryTimeline } from "@/components/retry-timeline";
 import { useNotificationLogs, useRetryNotification } from "@/lib/hooks";
 import { mockNotificationLogs, paginateData } from "@/lib/mock-data";
-import type { NotificationLog, NotificationStatus, NotificationChannel } from "@/lib/types";
+import type { NotificationLog, NotificationStatus, NotificationChannel, PaginatedResponse } from "@/lib/types";
 import { formatDistanceToNow } from "date-fns";
 import { motion, AnimatePresence } from "framer-motion";
 import {
@@ -40,6 +40,15 @@ interface NotificationLogsTableProps {
   onPageChange: (page: number) => void;
 }
 
+// Safe empty paginated result
+const EMPTY_RESULT: PaginatedResponse<NotificationLog> = {
+  content: [],
+  totalElements: 0,
+  totalPages: 0,
+  page: 0,
+  size: 10,
+};
+
 export function NotificationLogsTable({
   search,
   status,
@@ -49,7 +58,7 @@ export function NotificationLogsTable({
 }: NotificationLogsTableProps) {
   const [expandedId, setExpandedId] = useState<string | null>(null);
 
-  const { data, isLoading } = useNotificationLogs({
+  const { data, isLoading, isError } = useNotificationLogs({
     search,
     status,
     channel,
@@ -59,22 +68,29 @@ export function NotificationLogsTable({
 
   const retryMutation = useRetryNotification();
 
-  // Filter and paginate mock data if API not available
-  let filteredLogs = mockNotificationLogs;
-  if (search) {
-    const q = search.toLowerCase();
-    filteredLogs = filteredLogs.filter(
-      (l) => l.requestId.toLowerCase().includes(q) || l.userId.toLowerCase().includes(q)
-    );
-  }
-  if (status) {
-    filteredLogs = filteredLogs.filter((l) => l.status === status);
-  }
-  if (channel) {
-    filteredLogs = filteredLogs.filter((l) => l.channel === channel);
-  }
+  // Build mock fallback when API fails
+  const getMockResult = (): PaginatedResponse<NotificationLog> => {
+    let filtered = [...mockNotificationLogs];
+    if (search) {
+      const q = search.toLowerCase();
+      filtered = filtered.filter(
+        (l) =>
+          l.requestId.toLowerCase().includes(q) ||
+          l.userId.toLowerCase().includes(q)
+      );
+    }
+    if (status) filtered = filtered.filter((l) => l.status === status);
+    if (channel) filtered = filtered.filter((l) => l.channel === channel);
+    return paginateData(filtered, page, 10);
+  };
 
-  const result = data || paginateData(filteredLogs, page, 10);
+  // Priority: real API data → mock fallback on error → empty
+  const rawResult = data ?? (isError ? getMockResult() : undefined);
+  const result: PaginatedResponse<NotificationLog> = {
+    ...EMPTY_RESULT,
+    ...rawResult,
+    content: rawResult?.content ?? [],
+  };
 
   if (isLoading && !data) {
     return <TableSkeleton rows={6} cols={7} />;
@@ -121,7 +137,9 @@ export function NotificationLogsTable({
                 key={log.id}
                 log={log}
                 isExpanded={expandedId === log.id}
-                onToggle={() => setExpandedId(expandedId === log.id ? null : log.id)}
+                onToggle={() =>
+                  setExpandedId(expandedId === log.id ? null : log.id)
+                }
                 onRetry={() => retryMutation.mutate(log.id)}
                 onCopy={copyId}
                 isRetrying={retryMutation.isPending}
@@ -171,7 +189,14 @@ interface LogRowProps {
   isRetrying: boolean;
 }
 
-function LogRow({ log, isExpanded, onToggle, onRetry, onCopy, isRetrying }: LogRowProps) {
+function LogRow({
+  log,
+  isExpanded,
+  onToggle,
+  onRetry,
+  onCopy,
+  isRetrying,
+}: LogRowProps) {
   return (
     <>
       <TableRow
@@ -187,16 +212,25 @@ function LogRow({ log, isExpanded, onToggle, onRetry, onCopy, isRetrying }: LogR
         </TableCell>
         <TableCell>
           <button
-            onClick={(e) => { e.stopPropagation(); onCopy(log.requestId); }}
+            onClick={(e) => {
+              e.stopPropagation();
+              onCopy(log.requestId);
+            }}
             className="flex items-center gap-1 font-mono text-xs text-foreground hover:text-primary"
           >
             {log.requestId.slice(0, 12)}...
             <Copy className="h-3 w-3 opacity-50" />
           </button>
         </TableCell>
-        <TableCell className="max-w-[160px] truncate text-sm text-foreground">{log.recipient}</TableCell>
-        <TableCell><ChannelBadge channel={log.channel} /></TableCell>
-        <TableCell><StatusBadge status={log.status} /></TableCell>
+        <TableCell className="max-w-[160px] truncate text-sm text-foreground">
+          {log.recipient}
+        </TableCell>
+        <TableCell>
+          <ChannelBadge channel={log.channel} />
+        </TableCell>
+        <TableCell>
+          <StatusBadge status={log.status} />
+        </TableCell>
         <TableCell className="text-sm text-foreground">
           {log.deliveryTimeMs ? `${log.deliveryTimeMs}ms` : "-"}
         </TableCell>
@@ -208,7 +242,10 @@ function LogRow({ log, isExpanded, onToggle, onRetry, onCopy, isRetrying }: LogR
             <Button
               variant="ghost"
               size="sm"
-              onClick={(e) => { e.stopPropagation(); onRetry(); }}
+              onClick={(e) => {
+                e.stopPropagation();
+                onRetry();
+              }}
               disabled={isRetrying}
               className="text-primary hover:text-primary"
             >
@@ -233,32 +270,55 @@ function LogRow({ log, isExpanded, onToggle, onRetry, onCopy, isRetrying }: LogR
                 <div className="grid grid-cols-1 gap-6 bg-accent/20 p-6 lg:grid-cols-2">
                   {/* Payload */}
                   <div>
-                    <h4 className="mb-2 text-sm font-medium text-foreground">Payload</h4>
+                    <h4 className="mb-2 text-sm font-medium text-foreground">
+                      Payload
+                    </h4>
                     <pre className="max-h-48 overflow-auto rounded-lg bg-secondary p-4 font-mono text-xs text-muted-foreground">
                       {JSON.stringify(log.payload, null, 2)}
                     </pre>
                     {log.errorMessage && (
                       <div className="mt-3">
-                        <h4 className="mb-1 text-sm font-medium text-destructive">Error</h4>
-                        <p className="text-sm text-muted-foreground">{log.errorMessage}</p>
+                        <h4 className="mb-1 text-sm font-medium text-destructive">
+                          Error
+                        </h4>
+                        <p className="text-sm text-muted-foreground">
+                          {log.errorMessage}
+                        </p>
                       </div>
                     )}
                     <div className="mt-3 flex flex-wrap gap-4 text-xs text-muted-foreground">
-                      <span>User: <span className="font-mono text-foreground">{log.userId}</span></span>
+                      <span>
+                        User:{" "}
+                        <span className="font-mono text-foreground">
+                          {log.userId}
+                        </span>
+                      </span>
                       {log.templateId && (
-                        <span>Template: <span className="font-mono text-foreground">{log.templateId}</span></span>
+                        <span>
+                          Template:{" "}
+                          <span className="font-mono text-foreground">
+                            {log.templateId}
+                          </span>
+                        </span>
                       )}
-                      <span>Retries: <span className="text-foreground">{log.retryCount}</span></span>
+                      <span>
+                        Retries:{" "}
+                        <span className="text-foreground">{log.retryCount}</span>
+                      </span>
                     </div>
                   </div>
 
                   {/* Retry timeline */}
                   <div>
-                    <h4 className="mb-2 text-sm font-medium text-foreground">Retry History</h4>
+                    <h4 className="mb-2 text-sm font-medium text-foreground">
+                      Retry History
+                    </h4>
                     {log.retryHistory.length > 0 ? (
                       <RetryTimeline attempts={log.retryHistory} />
                     ) : (
-                      <p className="text-sm text-muted-foreground">No retry attempts</p>
+                      <p className="text-sm text-muted-foreground">
+                        No retry attempts
+                      </p>
                     )}
                   </div>
                 </div>

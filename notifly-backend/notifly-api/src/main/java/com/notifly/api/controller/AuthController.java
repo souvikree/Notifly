@@ -289,7 +289,6 @@ public class AuthController {
                 RESET_PREFIX + resetToken, user.getId().toString(),
                 30, TimeUnit.MINUTES
             );
-            // TODO: send email with reset link containing resetToken
             log.info("Password reset requested for userId={}", user.getId());
         });
 

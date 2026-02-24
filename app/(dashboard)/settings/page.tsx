@@ -13,7 +13,7 @@ import { Switch } from "@/components/ui/switch";
 import { Separator } from "@/components/ui/separator";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Badge } from "@/components/ui/badge";
-import { Save, Loader2, GripVertical, Mail, MessageSquare, Bell } from "lucide-react";
+import { Save, Loader2, GripVertical, Mail, MessageSquare, Bell, Globe } from "lucide-react";
 import { motion } from "framer-motion";
 import { toast } from "sonner";
 
@@ -21,6 +21,7 @@ const channelIcons: Record<NotificationChannel, React.ReactNode> = {
   EMAIL: <Mail className="h-4 w-4" />,
   SMS: <MessageSquare className="h-4 w-4" />,
   PUSH: <Bell className="h-4 w-4" />,
+  WEBHOOK: <Globe className="h-4 w-4" />,
 };
 
 export default function SettingsPage() {

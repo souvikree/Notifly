@@ -187,19 +187,45 @@ public class AdminController {
     // ── Templates ─────────────────────────────────────────────────────────────
 
     @GetMapping("/templates")
-    public ResponseEntity<List<NotificationTemplate>> getTemplates(
+    public ResponseEntity<List<Map<String, Object>>> getTemplates(
             @RequestParam(required = false) String channel,
             @RequestParam(required = false) Boolean active) {
+
         UUID tenantId = TenantContext.getTenantId();
-        return ResponseEntity.ok(templateRepository.findByTenantIdWithFilters(tenantId, channel, active));
+        List<NotificationTemplate> templates =
+                templateRepository.findByTenantIdWithFilters(tenantId, channel, active);
+
+        // Map to plain objects — avoids any Hibernate proxy / lazy-load issues
+        // during Jackson serialization, even if entity changes later.
+        List<Map<String, Object>> response = templates.stream().map(t -> {
+            Map<String, Object> map = new LinkedHashMap<>();
+            map.put("id",        t.getId());
+            map.put("tenantId",  t.getTenantId());
+            map.put("name",      t.getName());
+            map.put("channel",   t.getChannel());
+            map.put("subject",   t.getSubject());
+            map.put("content",   t.getContent());
+            map.put("version",   t.getVersion());
+            map.put("isActive",  t.getIsActive());
+            // variables may be null for rows inserted before the jsonb fix —
+            // return empty list rather than null so the frontend never crashes
+            map.put("variables", t.getVariables() != null ? t.getVariables() : List.of());
+            map.put("createdAt", t.getCreatedAt());
+            map.put("updatedAt", t.getUpdatedAt());
+            return map;
+        }).toList();
+
+        return ResponseEntity.ok(response);
     }
 
     @PostMapping("/templates")
-    public ResponseEntity<NotificationTemplate> createTemplate(
+    public ResponseEntity<Map<String, Object>> createTemplate(
             @Valid @RequestBody CreateTemplateRequest request) {
+
         UUID tenantId = TenantContext.getTenantId();
 
-        int nextVersion = templateRepository.findMaxVersionByTenantIdAndName(tenantId, request.getName())
+        int nextVersion = templateRepository
+                .findMaxVersionByTenantIdAndName(tenantId, request.getName())
                 .map(v -> v + 1).orElse(1);
 
         NotificationTemplate template = NotificationTemplate.builder()
@@ -209,32 +235,57 @@ public class AdminController {
                 .content(request.getContent())
                 .subject(request.getSubject())
                 .version(nextVersion)
-                .isActive(false)    // ← was .active() — field is now isActive
+                .isActive(false)
                 .build();
 
-        return ResponseEntity.status(201).body(templateRepository.save(template));
+        NotificationTemplate saved = templateRepository.save(template);
+
+        // Return same plain-map shape as getTemplates so frontend stays consistent
+        Map<String, Object> response = new LinkedHashMap<>();
+        response.put("id",        saved.getId());
+        response.put("tenantId",  saved.getTenantId());
+        response.put("name",      saved.getName());
+        response.put("channel",   saved.getChannel());
+        response.put("subject",   saved.getSubject());
+        response.put("content",   saved.getContent());
+        response.put("version",   saved.getVersion());
+        response.put("isActive",  saved.getIsActive());
+        response.put("variables", saved.getVariables() != null ? saved.getVariables() : List.of());
+        response.put("createdAt", saved.getCreatedAt());
+        response.put("updatedAt", saved.getUpdatedAt());
+
+        return ResponseEntity.status(201).body(response);
     }
 
     @PutMapping("/templates/{id}")
-    public ResponseEntity<NotificationTemplate> updateTemplate(
+    public ResponseEntity<Map<String, Object>> updateTemplate(
             @PathVariable UUID id,
             @Valid @RequestBody UpdateTemplateRequest request) {
-        UUID tenantId = TenantContext.getTenantId();
 
+        UUID tenantId = TenantContext.getTenantId();
         NotificationTemplate template = templateRepository.findByIdAndTenantId(id, tenantId)
                 .orElseThrow(() -> new ValidationException("Template not found: " + id));
 
         if (request.getContent() != null) template.setContent(request.getContent());
         if (request.getSubject() != null) template.setSubject(request.getSubject());
-        if (request.getActive() != null) template.setIsActive(request.getActive()); // ← setIsActive
-        return ResponseEntity.ok(templateRepository.save(template));
-    }
+        if (request.getActive()  != null) template.setIsActive(request.getActive());
 
-    @DeleteMapping("/templates/{id}")
-    public ResponseEntity<Void> deleteTemplate(@PathVariable UUID id) {
-        UUID tenantId = TenantContext.getTenantId();
-        templateRepository.deleteByIdAndTenantId(id, tenantId);
-        return ResponseEntity.noContent().build();
+        NotificationTemplate saved = templateRepository.save(template);
+
+        Map<String, Object> response = new LinkedHashMap<>();
+        response.put("id",        saved.getId());
+        response.put("tenantId",  saved.getTenantId());
+        response.put("name",      saved.getName());
+        response.put("channel",   saved.getChannel());
+        response.put("subject",   saved.getSubject());
+        response.put("content",   saved.getContent());
+        response.put("version",   saved.getVersion());
+        response.put("isActive",  saved.getIsActive());
+        response.put("variables", saved.getVariables() != null ? saved.getVariables() : List.of());
+        response.put("createdAt", saved.getCreatedAt());
+        response.put("updatedAt", saved.getUpdatedAt());
+
+        return ResponseEntity.ok(response);
     }
 
     // ── Request DTOs ──────────────────────────────────────────────────────────

@@ -1,30 +1,37 @@
 package com.notifly.common.domain.entity;
 
+import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
 import jakarta.persistence.*;
 import lombok.AllArgsConstructor;
 import lombok.Builder;
 import lombok.Data;
 import lombok.NoArgsConstructor;
 import org.hibernate.annotations.CreationTimestamp;
+import org.hibernate.annotations.JdbcTypeCode;
 import org.hibernate.annotations.UpdateTimestamp;
+import org.hibernate.type.SqlTypes;
 
 import java.time.Instant;
+import java.util.List;
 import java.util.UUID;
 
 @Entity
-@Table(name = "notification_templates",
+@Table(
+    name = "notification_templates",
     uniqueConstraints = {
         @UniqueConstraint(columnNames = {"tenant_id", "name", "version"})
     },
     indexes = {
         @Index(name = "idx_template_tenant_name", columnList = "tenant_id,name"),
-        @Index(name = "idx_template_active", columnList = "is_active")
+        @Index(name = "idx_template_active",      columnList = "is_active")
     }
 )
 @Data
 @Builder
 @NoArgsConstructor
 @AllArgsConstructor
+// Prevent Jackson from choking on Hibernate proxy fields during serialization
+@JsonIgnoreProperties({"hibernateLazyInitializer", "handler"})
 public class NotificationTemplate {
 
     @Id
@@ -50,16 +57,18 @@ public class NotificationTemplate {
     @Column(columnDefinition = "TEXT", nullable = false)
     private String content;
 
-    // DB column is "variables jsonb"
+    // variables is jsonb in PostgreSQL.
+    // @JdbcTypeCode(SqlTypes.JSON) tells Hibernate 6 to serialize List<String>
+    // as a JSON array rather than a raw varchar — no external library needed.
+    @JdbcTypeCode(SqlTypes.JSON)
     @Column(name = "variables", columnDefinition = "jsonb")
-    private String variables;
+    @Builder.Default
+    private List<String> variables = List.of();
 
-    // DB column is "is_active" — must match exactly
     @Column(name = "is_active", nullable = false)
     @Builder.Default
-    private Boolean isActive = true;
+    private Boolean isActive = false;
 
-    // DB column is "created_by uuid"
     @Column(name = "created_by", columnDefinition = "uuid")
     private UUID createdBy;
 
@@ -71,7 +80,8 @@ public class NotificationTemplate {
     @Column(name = "updated_at")
     private Instant updatedAt;
 
-    @ManyToOne(fetch = FetchType.LAZY)
-    @JoinColumn(name = "tenant_id", insertable = false, updatable = false)
-    private Tenant tenant;
+    // ── Tenant relation intentionally removed ──────────────────────────────────
+    // The @ManyToOne(fetch=LAZY) proxy gets serialized by Jackson outside of a
+    // transaction → LazyInitializationException → 500 on every GET /templates.
+    // The tenantId UUID column is all that's needed by any API consumer.
 }

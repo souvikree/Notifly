@@ -17,7 +17,7 @@ import {
 import { BrandLogo } from "@/components/BrandLogo";
 import { Button } from "@/components/ui/button";
 import { Separator } from "@/components/ui/separator";
-import { Avatar, AvatarFallback } from "@/components/ui/avatar";
+import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import {
   Tooltip,
   TooltipContent,
@@ -43,12 +43,16 @@ export function AppSidebar({ collapsed, onToggle }: AppSidebarProps) {
   const pathname = usePathname();
   const { user, logout } = useAuth();
 
-  const initials = user?.name
-    ? user.name
-      .split(" ")
-      .map((n) => n[0])
-      .join("")
-      .toUpperCase()
+  // AuthUser has firstName + lastName, not name
+  const fullName = user
+    ? [user.firstName, user.lastName].filter(Boolean).join(" ")
+    : "Admin User";
+
+  const initials = user
+    ? [user.firstName?.[0], user.lastName?.[0]]
+        .filter(Boolean)
+        .join("")
+        .toUpperCase() || "AD"
     : "AD";
 
   return (
@@ -61,15 +65,9 @@ export function AppSidebar({ collapsed, onToggle }: AppSidebarProps) {
       >
         {/* Logo */}
         <div className="group relative flex h-16 items-center gap-3 px-4">
-
-          {/* Clickable Logo */}
           <Link href="/dashboard" className="relative">
             <div className="relative">
-
-              {/* Soft Animated Glow */}
               <div className="absolute inset-0 rounded-xl bg-gradient-to-br from-emerald-400/30 via-cyan-400/20 to-indigo-500/30 blur-md opacity-60 transition-all duration-500 group-hover:opacity-100 group-hover:blur-lg" />
-
-              {/* Logo */}
               <div className="relative">
                 <BrandLogo
                   variant="image"
@@ -77,11 +75,9 @@ export function AppSidebar({ collapsed, onToggle }: AppSidebarProps) {
                   className="transition-transform duration-300 group-hover:scale-110"
                 />
               </div>
-
             </div>
           </Link>
 
-          {/* Brand Text */}
           {!collapsed && (
             <div className="flex flex-col leading-tight">
               <span className="text-lg font-semibold tracking-tight text-sidebar-foreground">
@@ -93,7 +89,6 @@ export function AppSidebar({ collapsed, onToggle }: AppSidebarProps) {
             </div>
           )}
 
-          {/* Toggle Button */}
           <Button
             variant="ghost"
             size="icon"
@@ -118,7 +113,8 @@ export function AppSidebar({ collapsed, onToggle }: AppSidebarProps) {
         {/* Navigation */}
         <nav className="flex-1 space-y-1 px-3 py-4">
           {navigation.map((item) => {
-            const isActive = pathname === item.href || pathname.startsWith(item.href + "/");
+            const isActive =
+              pathname === item.href || pathname.startsWith(item.href + "/");
             const link = (
               <Link
                 key={item.name}
@@ -130,7 +126,12 @@ export function AppSidebar({ collapsed, onToggle }: AppSidebarProps) {
                     : "text-sidebar-foreground/70 hover:bg-sidebar-accent/50 hover:text-sidebar-foreground"
                 )}
               >
-                <item.icon className={cn("h-4 w-4 shrink-0", isActive && "text-sidebar-primary")} />
+                <item.icon
+                  className={cn(
+                    "h-4 w-4 shrink-0",
+                    isActive && "text-sidebar-primary"
+                  )}
+                />
                 {!collapsed && <span>{item.name}</span>}
               </Link>
             );
@@ -139,7 +140,10 @@ export function AppSidebar({ collapsed, onToggle }: AppSidebarProps) {
               return (
                 <Tooltip key={item.name}>
                   <TooltipTrigger asChild>{link}</TooltipTrigger>
-                  <TooltipContent side="right" className="bg-popover text-popover-foreground">
+                  <TooltipContent
+                    side="right"
+                    className="bg-popover text-popover-foreground"
+                  >
                     {item.name}
                   </TooltipContent>
                 </Tooltip>
@@ -160,6 +164,9 @@ export function AppSidebar({ collapsed, onToggle }: AppSidebarProps) {
             )}
           >
             <Avatar className="h-8 w-8 shrink-0">
+              {user?.avatarUrl && (
+                <AvatarImage src={user.avatarUrl} alt={fullName} />
+              )}
               <AvatarFallback className="bg-sidebar-primary/20 text-xs text-sidebar-primary">
                 {initials}
               </AvatarFallback>
@@ -167,7 +174,7 @@ export function AppSidebar({ collapsed, onToggle }: AppSidebarProps) {
             {!collapsed && (
               <div className="flex-1 overflow-hidden">
                 <p className="truncate text-sm font-medium text-sidebar-foreground">
-                  {user?.name || "Admin User"}
+                  {fullName}
                 </p>
                 <p className="truncate text-xs text-sidebar-foreground/60">
                   {user?.email || "admin@notifly.io"}
@@ -187,7 +194,12 @@ export function AppSidebar({ collapsed, onToggle }: AppSidebarProps) {
                     <span className="sr-only">Logout</span>
                   </Button>
                 </TooltipTrigger>
-                <TooltipContent side="right" className="bg-popover text-popover-foreground">Logout</TooltipContent>
+                <TooltipContent
+                  side="right"
+                  className="bg-popover text-popover-foreground"
+                >
+                  Logout
+                </TooltipContent>
               </Tooltip>
             )}
           </div>

@@ -33,25 +33,19 @@ export function CreateTemplateDialog({ open, onOpenChange }: CreateTemplateDialo
   const [name, setName] = useState("");
   const [channel, setChannel] = useState<NotificationChannel>("EMAIL");
   const [subject, setSubject] = useState("");
-  const [body, setBody] = useState("");
-  const [variables, setVariables] = useState("");
+  const [content, setContent] = useState("");  // was "body" — backend field is "content"
 
   const createMutation = useCreateTemplate();
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
-    const vars = variables
-      .split(",")
-      .map((v) => v.trim())
-      .filter(Boolean);
 
     createMutation.mutate(
       {
         name,
         channel,
-        subject: channel === "EMAIL" ? subject : undefined,
-        body,
-        variables: vars,
+        content,                                          // backend expects "content"
+        subject: channel === "EMAIL" ? subject || undefined : undefined,
       },
       {
         onSuccess: () => {
@@ -66,8 +60,7 @@ export function CreateTemplateDialog({ open, onOpenChange }: CreateTemplateDialo
     setName("");
     setChannel("EMAIL");
     setSubject("");
-    setBody("");
-    setVariables("");
+    setContent("");
   };
 
   return (
@@ -76,7 +69,9 @@ export function CreateTemplateDialog({ open, onOpenChange }: CreateTemplateDialo
         <DialogHeader>
           <DialogTitle className="text-foreground">Create Template</DialogTitle>
           <DialogDescription className="text-muted-foreground">
-            Create a new notification template. Templates start as drafts and can be published later.
+            Create a new notification template. Use{" "}
+            <code className="rounded bg-secondary px-1 text-xs">{"{{variableName}}"}</code> for
+            dynamic content.
           </DialogDescription>
         </DialogHeader>
 
@@ -95,7 +90,10 @@ export function CreateTemplateDialog({ open, onOpenChange }: CreateTemplateDialo
 
           <div className="space-y-2">
             <Label className="text-foreground">Channel</Label>
-            <Select value={channel} onValueChange={(v) => setChannel(v as NotificationChannel)}>
+            <Select
+              value={channel}
+              onValueChange={(v) => setChannel(v as NotificationChannel)}
+            >
               <SelectTrigger className="bg-secondary">
                 <SelectValue />
               </SelectTrigger>
@@ -121,29 +119,27 @@ export function CreateTemplateDialog({ open, onOpenChange }: CreateTemplateDialo
           )}
 
           <div className="space-y-2">
-            <Label htmlFor="tpl-body" className="text-foreground">Body</Label>
+            <Label htmlFor="tpl-content" className="text-foreground">
+              {channel === "EMAIL" ? "Body (HTML)" : "Message"}
+            </Label>
             <Textarea
-              id="tpl-body"
-              value={body}
-              onChange={(e) => setBody(e.target.value)}
-              placeholder={"Use {{variableName}} for dynamic content..."}
+              id="tpl-content"
+              value={content}
+              onChange={(e) => setContent(e.target.value)}
+              placeholder={
+                channel === "EMAIL"
+                  ? "<p>Hello {{name}}, welcome to {{appName}}!</p>"
+                  : channel === "SMS"
+                  ? "Your code is {{otp}}. Expires in {{expiry}} minutes."
+                  : "{{title}}: {{message}}"
+              }
               rows={6}
               required
               className="bg-secondary font-mono text-sm"
             />
-          </div>
-
-          <div className="space-y-2">
-            <Label htmlFor="tpl-vars" className="text-foreground">Variables</Label>
-            <Input
-              id="tpl-vars"
-              value={variables}
-              onChange={(e) => setVariables(e.target.value)}
-              placeholder="Comma-separated: name, email, link"
-              className="bg-secondary"
-            />
             <p className="text-xs text-muted-foreground">
-              Enter template variable names separated by commas
+              Use <code className="rounded bg-secondary px-1">{"{{variableName}}"}</code> for
+              dynamic values
             </p>
           </div>
 
@@ -151,8 +147,10 @@ export function CreateTemplateDialog({ open, onOpenChange }: CreateTemplateDialo
             <Button type="button" variant="outline" onClick={() => onOpenChange(false)}>
               Cancel
             </Button>
-            <Button type="submit" disabled={createMutation.isPending}>
-              {createMutation.isPending && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
+            <Button type="submit" disabled={createMutation.isPending || !name || !content}>
+              {createMutation.isPending && (
+                <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+              )}
               Create Template
             </Button>
           </DialogFooter>

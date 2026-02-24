@@ -1,18 +1,17 @@
 "use client";
 
 import { useState } from "react";
-import Link from "next/link";
 import { PageHeader } from "@/components/page-header";
-import { StatusBadge } from "@/components/status-badge";
 import { ChannelBadge } from "@/components/channel-badge";
 import { EmptyState } from "@/components/empty-state";
 import { TableSkeleton } from "@/components/loading-states";
 import { CreateTemplateDialog } from "@/components/create-template-dialog";
 import { useTemplates, usePublishTemplate, useDeactivateTemplate } from "@/lib/hooks";
 import { mockTemplates, paginateData } from "@/lib/mock-data";
-import type { NotificationChannel, TemplateStatus, NotificationTemplate, PaginatedResponse } from "@/lib/types";
+import type { NotificationTemplate, PaginatedResponse } from "@/lib/types";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
+import { Badge } from "@/components/ui/badge";
 import { Card, CardContent } from "@/components/ui/card";
 import {
   Table,
@@ -41,7 +40,6 @@ import {
   Plus,
   FileCode2,
   MoreHorizontal,
-  Eye,
   Upload,
   XCircle,
   ChevronLeft,
@@ -58,32 +56,44 @@ const EMPTY_RESULT: PaginatedResponse<NotificationTemplate> = {
   size: 10,
 };
 
+// Adapt mock data (which uses old "body"/"status" shape) to new shape
+function adaptMockTemplates(templates: typeof mockTemplates): NotificationTemplate[] {
+  return templates.map((t) => ({
+    id:        t.id,
+    name:      t.name,
+    channel:   t.channel,
+    subject:   t.subject,
+    content:   (t as unknown as { body?: string }).body ?? "",
+    version:   t.version,
+    isActive:  t.status === "PUBLISHED",
+    createdAt: t.createdAt,
+    updatedAt: t.updatedAt,
+  }));
+}
+
 export default function TemplatesPage() {
   const [search, setSearch] = useState("");
-  const [channel, setChannel] = useState<NotificationChannel | "ALL">("ALL");
-  const [status, setStatus] = useState<TemplateStatus | "ALL">("ALL");
+  const [channel, setChannel] = useState<string>("ALL");
+  const [activeFilter, setActiveFilter] = useState<"ALL" | "true" | "false">("ALL");
   const [page, setPage] = useState(0);
   const [showCreate, setShowCreate] = useState(false);
 
   const { data, isLoading, isError } = useTemplates({
-    search: search || undefined,
-    channel: channel === "ALL" ? undefined : channel,
-    status: status === "ALL" ? undefined : status,
-    page,
-    size: 10,
+    channel:  channel === "ALL" ? undefined : channel,
+    active:   activeFilter === "ALL" ? undefined : activeFilter === "true",
   });
 
-  const publishMutation = usePublishTemplate();
+  const publishMutation   = usePublishTemplate();
   const deactivateMutation = useDeactivateTemplate();
 
   const getMockResult = (): PaginatedResponse<NotificationTemplate> => {
-    let filtered = [...mockTemplates];
+    let filtered = adaptMockTemplates(mockTemplates);
     if (search) {
       const q = search.toLowerCase();
       filtered = filtered.filter((t) => t.name.toLowerCase().includes(q));
     }
     if (channel !== "ALL") filtered = filtered.filter((t) => t.channel === channel);
-    if (status !== "ALL") filtered = filtered.filter((t) => t.status === status);
+    if (activeFilter !== "ALL") filtered = filtered.filter((t) => String(t.isActive) === activeFilter);
     return paginateData(filtered, page, 10);
   };
 
@@ -94,7 +104,12 @@ export default function TemplatesPage() {
     content: rawResult?.content ?? [],
   };
 
-  const hasFilters = search || channel !== "ALL" || status !== "ALL";
+  // Client-side search filter (backend doesn't support search param)
+  const displayContent = search
+    ? result.content.filter((t) => t.name.toLowerCase().includes(search.toLowerCase()))
+    : result.content;
+
+  const hasFilters = search || channel !== "ALL" || activeFilter !== "ALL";
 
   if (isLoading && !data) {
     return (
@@ -124,20 +139,11 @@ export default function TemplatesPage() {
           <Input
             placeholder="Search templates..."
             value={search}
-            onChange={(e) => {
-              setSearch(e.target.value);
-              setPage(0);
-            }}
+            onChange={(e) => { setSearch(e.target.value); setPage(0); }}
             className="bg-secondary pl-9"
           />
         </div>
-        <Select
-          value={channel}
-          onValueChange={(v) => {
-            setChannel(v as NotificationChannel | "ALL");
-            setPage(0);
-          }}
-        >
+        <Select value={channel} onValueChange={(v) => { setChannel(v); setPage(0); }}>
           <SelectTrigger className="w-[140px] bg-secondary">
             <SelectValue />
           </SelectTrigger>
@@ -148,33 +154,21 @@ export default function TemplatesPage() {
             <SelectItem value="PUSH">Push</SelectItem>
           </SelectContent>
         </Select>
-        <Select
-          value={status}
-          onValueChange={(v) => {
-            setStatus(v as TemplateStatus | "ALL");
-            setPage(0);
-          }}
-        >
+        <Select value={activeFilter} onValueChange={(v) => { setActiveFilter(v as "ALL" | "true" | "false"); setPage(0); }}>
           <SelectTrigger className="w-[140px] bg-secondary">
             <SelectValue />
           </SelectTrigger>
           <SelectContent>
             <SelectItem value="ALL">All Status</SelectItem>
-            <SelectItem value="DRAFT">Draft</SelectItem>
-            <SelectItem value="PUBLISHED">Published</SelectItem>
-            <SelectItem value="DEACTIVATED">Deactivated</SelectItem>
+            <SelectItem value="true">Active</SelectItem>
+            <SelectItem value="false">Inactive</SelectItem>
           </SelectContent>
         </Select>
         {hasFilters && (
           <Button
             variant="ghost"
             size="sm"
-            onClick={() => {
-              setSearch("");
-              setChannel("ALL");
-              setStatus("ALL");
-              setPage(0);
-            }}
+            onClick={() => { setSearch(""); setChannel("ALL"); setActiveFilter("ALL"); setPage(0); }}
             className="text-muted-foreground"
           >
             <X className="mr-1 h-3 w-3" />
@@ -183,7 +177,7 @@ export default function TemplatesPage() {
         )}
       </div>
 
-      {result.content.length === 0 ? (
+      {displayContent.length === 0 ? (
         <Card className="border-border/50 bg-card">
           <CardContent>
             <EmptyState
@@ -199,11 +193,7 @@ export default function TemplatesPage() {
           </CardContent>
         </Card>
       ) : (
-        <motion.div
-          initial={{ opacity: 0 }}
-          animate={{ opacity: 1 }}
-          transition={{ duration: 0.3 }}
-        >
+        <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} transition={{ duration: 0.3 }}>
           <Card className="border-border/50 bg-card">
             <CardContent className="p-0">
               <Table>
@@ -213,24 +203,15 @@ export default function TemplatesPage() {
                     <TableHead className="text-muted-foreground">Channel</TableHead>
                     <TableHead className="text-muted-foreground">Status</TableHead>
                     <TableHead className="text-muted-foreground">Version</TableHead>
-                    <TableHead className="text-muted-foreground">Variables</TableHead>
                     <TableHead className="text-muted-foreground">Updated</TableHead>
                     <TableHead className="w-12" />
                   </TableRow>
                 </TableHeader>
                 <TableBody>
-                  {result.content.map((template: NotificationTemplate) => (
-                    <TableRow
-                      key={template.id}
-                      className="border-border/50 hover:bg-accent/30"
-                    >
+                  {displayContent.map((template: NotificationTemplate) => (
+                    <TableRow key={template.id} className="border-border/50 hover:bg-accent/30">
                       <TableCell>
-                        <Link
-                          href={`/templates/${template.id}`}
-                          className="font-medium text-foreground hover:text-primary"
-                        >
-                          {template.name}
-                        </Link>
+                        <p className="font-medium text-foreground">{template.name}</p>
                         {template.subject && (
                           <p className="mt-0.5 max-w-[200px] truncate text-xs text-muted-foreground">
                             {template.subject}
@@ -238,35 +219,25 @@ export default function TemplatesPage() {
                         )}
                       </TableCell>
                       <TableCell>
-                        <ChannelBadge channel={template.channel} />
+                        <ChannelBadge channel={template.channel as import("@/lib/types").NotificationChannel} />
                       </TableCell>
                       <TableCell>
-                        <StatusBadge status={template.status} />
+                        <Badge
+                          variant="outline"
+                          className={
+                            template.isActive
+                              ? "border-success/30 bg-success/10 text-success"
+                              : "border-muted-foreground/30 bg-muted text-muted-foreground"
+                          }
+                        >
+                          {template.isActive ? "Active" : "Inactive"}
+                        </Badge>
                       </TableCell>
                       <TableCell className="text-sm text-foreground">
                         v{template.version}
                       </TableCell>
-                      <TableCell>
-                        <div className="flex flex-wrap gap-1">
-                          {(template.variables ?? []).slice(0, 3).map((v) => (
-                            <span
-                              key={v}
-                              className="rounded bg-secondary px-1.5 py-0.5 font-mono text-xs text-muted-foreground"
-                            >
-                              {`{{${v}}}`}
-                            </span>
-                          ))}
-                          {(template.variables ?? []).length > 3 && (
-                            <span className="text-xs text-muted-foreground">
-                              +{template.variables.length - 3}
-                            </span>
-                          )}
-                        </div>
-                      </TableCell>
                       <TableCell className="text-sm text-muted-foreground">
-                        {formatDistanceToNow(new Date(template.updatedAt), {
-                          addSuffix: true,
-                        })}
+                        {formatDistanceToNow(new Date(template.updatedAt), { addSuffix: true })}
                       </TableCell>
                       <TableCell>
                         <DropdownMenu>
@@ -277,21 +248,13 @@ export default function TemplatesPage() {
                             </Button>
                           </DropdownMenuTrigger>
                           <DropdownMenuContent align="end" className="bg-popover border-border">
-                            <DropdownMenuItem asChild>
-                              <Link href={`/templates/${template.id}`}>
-                                <Eye className="mr-2 h-4 w-4" />
-                                View / Edit
-                              </Link>
-                            </DropdownMenuItem>
-                            {template.status === "DRAFT" && (
-                              <DropdownMenuItem
-                                onClick={() => publishMutation.mutate(template.id)}
-                              >
+                            {!template.isActive && (
+                              <DropdownMenuItem onClick={() => publishMutation.mutate(template.id)}>
                                 <Upload className="mr-2 h-4 w-4" />
-                                Publish
+                                Activate
                               </DropdownMenuItem>
                             )}
-                            {template.status === "PUBLISHED" && (
+                            {template.isActive && (
                               <DropdownMenuItem
                                 onClick={() => deactivateMutation.mutate(template.id)}
                                 className="text-destructive focus:text-destructive"
@@ -310,7 +273,7 @@ export default function TemplatesPage() {
 
               <div className="flex items-center justify-between border-t border-border/50 px-4 py-3">
                 <p className="text-sm text-muted-foreground">
-                  Showing {result.content.length} of {result.totalElements}
+                  Showing {displayContent.length} of {result.totalElements}
                 </p>
                 <div className="flex items-center gap-2">
                   <Button

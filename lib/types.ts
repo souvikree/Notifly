@@ -17,8 +17,8 @@ export interface AuthUser {
   lastName:     string;
   role:         UserRole;
   tenantId:     string;
-  avatarUrl?:   string;      // populated for Google users
-  authProvider: AuthProvider; // "LOCAL" | "GOOGLE" | "LINKED"
+  avatarUrl?:   string;
+  authProvider: AuthProvider;
 }
 
 export interface LoginRequest {
@@ -146,47 +146,50 @@ export interface DlqFilters {
 }
 
 // --- Templates ---
+// Backend entity fields: name, channel, content (not body), subject
+// The frontend uses "content" to match the backend exactly
 export interface NotificationTemplate {
-  id:          string;
-  name:        string;
-  channel:     NotificationChannel;
-  subject?:    string;
-  body:        string;
-  status:      TemplateStatus;
-  version:     number;
-  variables:   string[];
-  createdAt:   string;
-  updatedAt:   string;
-  publishedAt?: string;
+  id:         string;
+  tenantId?:  string;
+  name:       string;
+  channel:    string;           // backend returns plain string
+  subject?:   string;
+  content:    string;           // backend field name is "content", not "body"
+  version:    number;
+  isActive:   boolean;          // backend field name is "isActive"
+  variables?: string[];         // optional — backend doesn't store this as array
+  createdAt:  string;
+  updatedAt:  string;
 }
 
 export interface TemplateVersion {
   version:   number;
-  body:      string;
+  content:   string;            // "content" not "body"
   subject?:  string;
-  status:    TemplateStatus;
   createdAt: string;
   createdBy: string;
 }
 
+// Matches backend AdminController.CreateTemplateRequest exactly:
+// { name, channel, content, subject }
 export interface CreateTemplateRequest {
-  name:       string;
-  channel:    NotificationChannel;
-  subject?:   string;
-  body:       string;
-  variables:  string[];
+  name:     string;
+  channel:  string;
+  content:  string;             // backend field: content (not body)
+  subject?: string;
 }
 
+// Matches backend AdminController.UpdateTemplateRequest exactly:
+// { content, subject, active }
 export interface UpdateTemplateRequest {
-  name?:      string;
-  subject?:   string;
-  body?:      string;
-  variables?: string[];
+  content?: string;
+  subject?: string;
+  active?:  boolean;
 }
 
 export interface TemplateFilters {
-  channel?: NotificationChannel;
-  status?:  TemplateStatus;
+  channel?: string;
+  active?:  boolean;            // backend uses "active" boolean, not TemplateStatus string
   search?:  string;
   page?:    number;
   size?:    number;

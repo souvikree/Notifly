@@ -2,7 +2,10 @@ package com.notifly.api.controller;
 
 import com.notifly.api.util.JwtUtil;
 import com.notifly.common.domain.entity.AdminUser;
+import com.notifly.common.domain.entity.RateLimitConfig;
+import com.notifly.common.domain.entity.Tenant;
 import com.notifly.common.domain.repository.AdminUserRepository;
+import com.notifly.common.domain.repository.RateLimitConfigRepository;
 import com.notifly.common.domain.repository.TenantRepository;
 import com.notifly.common.exception.AuthenticationException;
 import com.notifly.common.exception.ValidationException;
@@ -24,7 +27,6 @@ import java.util.Optional;
 import java.util.UUID;
 import java.util.concurrent.TimeUnit;
 
-// Google ID token verification
 import com.google.api.client.googleapis.auth.oauth2.GoogleIdToken;
 import com.google.api.client.googleapis.auth.oauth2.GoogleIdTokenVerifier;
 import com.google.api.client.http.javanet.NetHttpTransport;
@@ -32,21 +34,20 @@ import com.google.api.client.json.gson.GsonFactory;
 import java.util.Collections;
 
 /**
- * Authentication endpoints — supports BOTH email/password AND Google OAuth.
+ * Authentication controller.
  *
- * POST /api/v1/auth/login         — email + password login
- * POST /api/v1/auth/google        — Google ID token login / register
- * POST /api/v1/auth/register      — email + password registration
- * POST /api/v1/auth/refresh       — refresh access token
- * POST /api/v1/auth/logout        — invalidate refresh token
- * POST /api/v1/auth/forgot-password — send reset link
+ * Registration flow (email/password):
+ *   User provides name, email, password, workspaceName
+ *   → Backend auto-creates Tenant (slug from workspaceName)
+ *   → AdminUser created and linked to that tenant
+ *   → RateLimitConfig seeded (FREE plan defaults)
+ *   → Tokens issued
  *
- * Flow for Google:
- *   1. Frontend gets a Google ID token from @react-oauth/google
- *   2. Frontend sends that token to POST /auth/google
- *   3. Backend verifies it with Google's servers (no fake tokens accepted)
- *   4. Backend finds-or-creates the AdminUser
- *   5. Returns same JWT tokens as email login
+ * Registration flow (Google — new user):
+ *   POST /auth/google → 202 { needsOnboarding: true, profile }
+ *   → Frontend shows /onboarding page
+ *   → User enters workspace name → POST /auth/complete-google-signup
+ *   → Tenant + user created → tokens issued
  */
 @Slf4j
 @RestController
@@ -54,36 +55,34 @@ import java.util.Collections;
 @RequiredArgsConstructor
 public class AuthController {
 
-    private final AdminUserRepository adminUserRepository;
-    private final TenantRepository tenantRepository;
-    private final JwtUtil jwtUtil;
-    private final PasswordEncoder passwordEncoder;
+    private final AdminUserRepository           adminUserRepository;
+    private final TenantRepository              tenantRepository;
+    private final RateLimitConfigRepository     rateLimitConfigRepository;
+    private final JwtUtil                       jwtUtil;
+    private final PasswordEncoder               passwordEncoder;
     private final RedisTemplate<String, String> redisTemplate;
 
-    @Value("${google.client-id}")
+    @Value("${google.client-id:}")
     private String googleClientId;
 
-    // ── For Google-only signups we need a default tenant ──────────────────────
-    // In production you'd have a tenant selection step or a "personal" tenant.
-    // For now, we create one if it doesn't exist, keyed by the user's email domain.
-    @Value("${notifly.default-tenant-id:}")
-    private String defaultTenantId;
-
     private static final int  MAX_FAILED_ATTEMPTS = 5;
-    private static final long LOCKOUT_SECONDS      = 900; // 15 minutes
-    private static final String REFRESH_PREFIX     = "refresh:";
-    private static final String LOCKOUT_PREFIX     = "lockout:";
-    private static final String RESET_PREFIX       = "reset:";
+    private static final long LOCKOUT_SECONDS     = 900;
+    private static final String REFRESH_PREFIX    = "refresh:";
+    private static final String LOCKOUT_PREFIX    = "lockout:";
+    private static final String RESET_PREFIX      = "reset:";
 
-    // ══════════════════════════════════════════════════════════════════════════
-    // 1. Email / Password Login
-    // ══════════════════════════════════════════════════════════════════════════
+    // FREE plan limits applied to every new signup
+    private static final int FREE_REQUESTS_PER_MINUTE = 60;
+    private static final int FREE_REQUESTS_PER_HOUR   = 1000;
+    private static final int FREE_BURST_LIMIT         = 100;
+    private static final int FREE_MONTHLY_LIMIT       = 10000;
+
+    // ── 1. Login ──────────────────────────────────────────────────────────────
 
     @PostMapping("/login")
     public ResponseEntity<AuthResponse> login(@Valid @RequestBody LoginRequest request) {
         String lockoutKey = LOCKOUT_PREFIX + request.getEmail();
 
-        // Check lockout
         String attempts = redisTemplate.opsForValue().get(lockoutKey);
         if (attempts != null && Integer.parseInt(attempts) >= MAX_FAILED_ATTEMPTS) {
             throw new AuthenticationException("Account temporarily locked. Try again in 15 minutes.");
@@ -95,11 +94,9 @@ public class AuthController {
                     return new AuthenticationException("Invalid email or password");
                 });
 
-        // Google-only users don't have a password hash
         if (user.getPasswordHash() == null) {
             throw new AuthenticationException(
-                "This account uses Google sign-in. Please click 'Continue with Google'."
-            );
+                "This account uses Google sign-in. Please click 'Continue with Google'.");
         }
 
         if (!passwordEncoder.matches(request.getPassword(), user.getPasswordHash())) {
@@ -115,13 +112,49 @@ public class AuthController {
         return ResponseEntity.ok(issueTokensFor(user));
     }
 
-    // ══════════════════════════════════════════════════════════════════════════
-    // 2. Google OAuth Login / Register
-    // ══════════════════════════════════════════════════════════════════════════
+    // ── 2. Email Registration — auto-creates tenant ───────────────────────────
+
+    @PostMapping("/register")
+    public ResponseEntity<AuthResponse> register(@Valid @RequestBody RegisterRequest request) {
+        if (adminUserRepository.findByEmail(request.getEmail()).isPresent()) {
+            throw new ValidationException("Email already registered. Please sign in instead.");
+        }
+
+        validatePasswordStrength(request.getPassword());
+
+        String slug = generateUniqueSlug(request.getWorkspaceName());
+
+        Tenant tenant = Tenant.builder()
+                .name(request.getWorkspaceName().trim())
+                .slug(slug)
+                .plan("FREE")
+                .monthlyRequestLimit(FREE_MONTHLY_LIMIT)
+                .build();
+        tenant = tenantRepository.save(tenant);
+
+        AdminUser user = AdminUser.builder()
+                .tenantId(tenant.getId())
+                .email(request.getEmail())
+                .passwordHash(passwordEncoder.encode(request.getPassword()))
+                .firstName(request.getFirstName())
+                .lastName(request.getLastName())
+                .authProvider("LOCAL")
+                .role("ADMIN")
+                .active(true)
+                .build();
+        user = adminUserRepository.save(user);
+
+        seedRateLimitConfig(tenant.getId());
+
+        log.info("New workspace: tenantId={}, slug={}, userId={}",
+                tenant.getId(), slug, user.getId());
+        return ResponseEntity.status(201).body(issueTokensFor(user));
+    }
+
+    // ── 3. Google Auth ────────────────────────────────────────────────────────
 
     @PostMapping("/google")
-    public ResponseEntity<AuthResponse> googleAuth(@Valid @RequestBody GoogleAuthRequest request) {
-        // Verify the ID token with Google
+    public ResponseEntity<?> googleAuth(@Valid @RequestBody GoogleAuthRequest request) {
         GoogleIdToken.Payload payload = verifyGoogleToken(request.getIdToken());
 
         String googleId  = payload.getSubject();
@@ -133,99 +166,98 @@ public class AuthController {
         if (firstName == null) firstName = email.split("@")[0];
         if (lastName  == null) lastName  = "";
 
-        // ── Find existing user by googleId (most direct match) ────────────────
+        // Existing Google user → login
         Optional<AdminUser> byGoogleId = adminUserRepository.findByGoogleId(googleId);
         if (byGoogleId.isPresent()) {
             AdminUser user = byGoogleId.get();
-            if (!user.isActive()) {
-                throw new AuthenticationException("Account is inactive. Contact your administrator.");
-            }
-            // Update avatar in case it changed
+            if (!user.isActive()) throw new AuthenticationException("Account is inactive.");
             if (avatarUrl != null && !avatarUrl.equals(user.getAvatarUrl())) {
                 user.setAvatarUrl(avatarUrl);
                 adminUserRepository.save(user);
             }
-            log.info("Google login - existing user: userId={}", user.getId());
             return ResponseEntity.ok(issueTokensFor(user));
         }
 
-        // ── Find existing user by email (they registered with email/password) ─
+        // Email already registered with password → link Google
         Optional<AdminUser> byEmail = adminUserRepository.findByEmail(email);
         if (byEmail.isPresent()) {
             AdminUser user = byEmail.get();
-            // Link Google to their existing account
             user.setGoogleId(googleId);
             user.setAvatarUrl(avatarUrl);
-            if ("LOCAL".equals(user.getAuthProvider())) {
-                user.setAuthProvider("LINKED"); // has both email+password and Google
-            }
+            if ("LOCAL".equals(user.getAuthProvider())) user.setAuthProvider("LINKED");
             adminUserRepository.save(user);
-            log.info("Google login - linked to existing email account: userId={}", user.getId());
             return ResponseEntity.ok(issueTokensFor(user));
         }
 
-        // ── Brand new user — create account ───────────────────────────────────
-        UUID tenantId = resolveTenantForGoogleUser(email);
+        // Brand new user — needs workspace name before we can create tenant
+        log.info("New Google user needs onboarding: email={}", email);
+        return ResponseEntity.status(202).body(Map.of(
+            "needsOnboarding", true,
+            "profile", Map.of(
+                "idToken",   request.getIdToken(),
+                "email",     email,
+                "firstName", firstName,
+                "lastName",  lastName,
+                "avatarUrl", avatarUrl != null ? avatarUrl : ""
+            )
+        ));
+    }
 
-        final String firstNameFinal = firstName;
-        final String lastNameFinal  = lastName;
+    // ── 4. Complete Google Signup (from /onboarding page) ─────────────────────
 
-        AdminUser newUser = AdminUser.builder()
-                .tenantId(tenantId)
+    @PostMapping("/complete-google-signup")
+    public ResponseEntity<AuthResponse> completeGoogleSignup(
+            @Valid @RequestBody CompleteGoogleSignupRequest request) {
+
+        GoogleIdToken.Payload payload = verifyGoogleToken(request.getIdToken());
+
+        String googleId  = payload.getSubject();
+        String email     = payload.getEmail();
+        String firstName = (String) payload.get("given_name");
+        String lastName  = (String) payload.get("family_name");
+        String avatarUrl = (String) payload.get("picture");
+
+        if (firstName == null) firstName = email.split("@")[0];
+        if (lastName  == null) lastName  = "";
+
+        // Guard against race / double submit
+        Optional<AdminUser> existing = adminUserRepository.findByGoogleId(googleId);
+        if (existing.isPresent()) {
+            return ResponseEntity.ok(issueTokensFor(existing.get()));
+        }
+
+        String slug = generateUniqueSlug(request.getWorkspaceName());
+
+        Tenant tenant = Tenant.builder()
+                .name(request.getWorkspaceName().trim())
+                .slug(slug)
+                .plan("FREE")
+                .monthlyRequestLimit(FREE_MONTHLY_LIMIT)
+                .build();
+        tenant = tenantRepository.save(tenant);
+
+        AdminUser user = AdminUser.builder()
+                .tenantId(tenant.getId())
                 .email(email)
                 .googleId(googleId)
                 .avatarUrl(avatarUrl)
-                .firstName(firstNameFinal)
-                .lastName(lastNameFinal)
+                .firstName(firstName)
+                .lastName(lastName)
                 .authProvider("GOOGLE")
-                .passwordHash(null) // No password for Google-only users
+                .passwordHash(null)
                 .role("ADMIN")
                 .active(true)
                 .build();
-
-        newUser = adminUserRepository.save(newUser);
-        log.info("Google login - new user created: userId={}, tenantId={}", newUser.getId(), tenantId);
-        return ResponseEntity.status(201).body(issueTokensFor(newUser));
-    }
-
-    // ══════════════════════════════════════════════════════════════════════════
-    // 3. Email / Password Registration
-    // ══════════════════════════════════════════════════════════════════════════
-
-    @PostMapping("/register")
-    public ResponseEntity<AuthResponse> register(@Valid @RequestBody RegisterRequest request) {
-        // Tenant must exist
-        UUID tenantId = UUID.fromString(request.getTenantId());
-        if (!tenantRepository.existsById(tenantId)) {
-            throw new ValidationException("Tenant not found: " + request.getTenantId());
-        }
-
-        // Check duplicate email within tenant
-        if (adminUserRepository.existsByTenantIdAndEmail(tenantId, request.getEmail())) {
-            throw new ValidationException("Email already registered for this tenant");
-        }
-
-        validatePasswordStrength(request.getPassword());
-
-        AdminUser user = AdminUser.builder()
-                .tenantId(tenantId)
-                .email(request.getEmail())
-                .passwordHash(passwordEncoder.encode(request.getPassword()))
-                .firstName(request.getFirstName())
-                .lastName(request.getLastName())
-                .authProvider("LOCAL")
-                .role("ADMIN")
-                .active(true)
-                .build();
-
         user = adminUserRepository.save(user);
-        log.info("New admin registered: userId={}, tenantId={}", user.getId(), user.getTenantId());
+
+        seedRateLimitConfig(tenant.getId());
+
+        log.info("Google signup complete: tenantId={}, slug={}, userId={}",
+                tenant.getId(), slug, user.getId());
         return ResponseEntity.status(201).body(issueTokensFor(user));
     }
 
-    // ══════════════════════════════════════════════════════════════════════════
-    // 4. Refresh Token
-    // ══════════════════════════════════════════════════════════════════════════
+    // ── 5. Refresh Token (SEC-004 rotation) ───────────────────────────────────
 
     @PostMapping("/refresh")
     public ResponseEntity<Map<String, String>> refresh(@Valid @RequestBody RefreshRequest request) {
@@ -243,6 +275,7 @@ public class AuthController {
 
         String stored = redisTemplate.opsForValue().get(REFRESH_PREFIX + userId);
         if (!token.equals(stored)) {
+            log.warn("SEC: Refresh token reuse detected for userId={}", userId);
             throw new AuthenticationException("Refresh token has been revoked");
         }
 
@@ -250,16 +283,24 @@ public class AuthController {
                 .findByIdAndTenantId(UUID.fromString(userId), UUID.fromString(tenantId))
                 .orElseThrow(() -> new AuthenticationException("User not found"));
 
-        String newAccessToken = jwtUtil.generateToken(userId, tenantId, user.getRole());
-        return ResponseEntity.ok(Map.of("accessToken", newAccessToken, "expiresIn", "86400"));
+        String newAccessToken  = jwtUtil.generateToken(userId, tenantId, user.getRole());
+        String newRefreshToken = jwtUtil.generateRefreshToken(userId, tenantId);
+
+        redisTemplate.delete(REFRESH_PREFIX + userId);
+        redisTemplate.opsForValue().set(REFRESH_PREFIX + userId, newRefreshToken, 7, TimeUnit.DAYS);
+
+        return ResponseEntity.ok(Map.of(
+            "accessToken",  newAccessToken,
+            "refreshToken", newRefreshToken,
+            "expiresIn",    "86400"
+        ));
     }
 
-    // ══════════════════════════════════════════════════════════════════════════
-    // 5. Logout
-    // ══════════════════════════════════════════════════════════════════════════
+    // ── 6. Logout ─────────────────────────────────────────────────────────────
 
     @PostMapping("/logout")
-    public ResponseEntity<Map<String, String>> logout(@RequestBody(required = false) RefreshRequest request) {
+    public ResponseEntity<Map<String, String>> logout(
+            @RequestBody(required = false) RefreshRequest request) {
         if (request != null && request.getRefreshToken() != null) {
             try {
                 String userId = jwtUtil.getUserIdFromToken(request.getRefreshToken());
@@ -269,58 +310,67 @@ public class AuthController {
         return ResponseEntity.ok(Map.of("message", "Logged out successfully"));
     }
 
-    // ══════════════════════════════════════════════════════════════════════════
-    // 6. Forgot Password (stub — wire up email service in production)
-    // ══════════════════════════════════════════════════════════════════════════
+    // ── 7. Forgot Password ────────────────────────────────────────────────────
 
     @PostMapping("/forgot-password")
     public ResponseEntity<Map<String, String>> forgotPassword(
             @RequestBody Map<String, String> body) {
         String email = body.get("email");
-
-        // Always return 200 for security (don't reveal whether email exists)
         adminUserRepository.findByEmail(email).ifPresent(user -> {
-            if ("GOOGLE".equals(user.getAuthProvider())) {
-                // Google-only users can't reset a password — silently skip
-                return;
-            }
+            if ("GOOGLE".equals(user.getAuthProvider())) return;
             String resetToken = UUID.randomUUID().toString();
             redisTemplate.opsForValue().set(
-                RESET_PREFIX + resetToken, user.getId().toString(),
-                30, TimeUnit.MINUTES
-            );
+                RESET_PREFIX + resetToken, user.getId().toString(), 30, TimeUnit.MINUTES);
             log.info("Password reset requested for userId={}", user.getId());
         });
-
-        return ResponseEntity.ok(Map.of("message", "If that email is registered, a reset link has been sent."));
+        return ResponseEntity.ok(Map.of(
+            "message", "If that email is registered, a reset link has been sent."));
     }
 
-    // ══════════════════════════════════════════════════════════════════════════
-    // Private Helpers
-    // ══════════════════════════════════════════════════════════════════════════
+    // ── Private helpers ───────────────────────────────────────────────────────
 
     private AuthResponse issueTokensFor(AdminUser user) {
         String userId   = user.getId().toString();
         String tenantId = user.getTenantId().toString();
-
         String accessToken  = jwtUtil.generateToken(userId, tenantId, user.getRole());
         String refreshToken = jwtUtil.generateRefreshToken(userId, tenantId);
-
         redisTemplate.opsForValue().set(REFRESH_PREFIX + userId, refreshToken, 7, TimeUnit.DAYS);
-
         return new AuthResponse(
-                accessToken,
-                refreshToken,
-                86400L,
-                userId,
-                user.getEmail(),
-                user.getFirstName(),
-                user.getLastName(),
-                user.getRole(),
-                tenantId,
-                user.getAvatarUrl(),
-                user.getAuthProvider()
-        );
+                accessToken, refreshToken, 86400L,
+                userId, user.getEmail(),
+                user.getFirstName(), user.getLastName(),
+                user.getRole(), tenantId,
+                user.getAvatarUrl(), user.getAuthProvider());
+    }
+
+    /**
+     * "My SaaS App" → "my-saas-app"
+     * If slug taken: "my-saas-app-2", "my-saas-app-3", etc.
+     */
+    private String generateUniqueSlug(String workspaceName) {
+        String base = workspaceName.trim()
+                .toLowerCase()
+                .replaceAll("[^a-z0-9\\s-]", "")
+                .replaceAll("[\\s]+", "-")
+                .replaceAll("-+", "-")
+                .replaceAll("^-|-$", "");
+
+        if (base.isEmpty()) base = "workspace";
+        if (!tenantRepository.existsBySlug(base)) return base;
+
+        int suffix = 2;
+        while (tenantRepository.existsBySlug(base + "-" + suffix)) suffix++;
+        return base + "-" + suffix;
+    }
+
+    private void seedRateLimitConfig(UUID tenantId) {
+        RateLimitConfig config = RateLimitConfig.builder()
+                .tenantId(tenantId)
+                .requestsPerMinute(FREE_REQUESTS_PER_MINUTE)
+                .requestsPerHour(FREE_REQUESTS_PER_HOUR)
+                .burstLimit(FREE_BURST_LIMIT)
+                .build();
+        rateLimitConfigRepository.save(config);
     }
 
     private GoogleIdToken.Payload verifyGoogleToken(String idToken) {
@@ -329,11 +379,8 @@ public class AuthController {
                     new NetHttpTransport(), GsonFactory.getDefaultInstance())
                     .setAudience(Collections.singletonList(googleClientId))
                     .build();
-
             GoogleIdToken token = verifier.verify(idToken);
-            if (token == null) {
-                throw new AuthenticationException("Google ID token is invalid or expired");
-            }
+            if (token == null) throw new AuthenticationException("Google ID token is invalid or expired");
             return token.getPayload();
         } catch (AuthenticationException e) {
             throw e;
@@ -343,30 +390,11 @@ public class AuthController {
         }
     }
 
-    /**
-     * Resolve which tenant a new Google user belongs to.
-     * Strategy: use configured default tenant, or throw if none configured.
-     * In production you'd show a tenant selection page or use email domain matching.
-     */
-    private UUID resolveTenantForGoogleUser(String email) {
-        if (defaultTenantId != null && !defaultTenantId.isBlank()) {
-            UUID id = UUID.fromString(defaultTenantId);
-            if (tenantRepository.existsById(id)) {
-                return id;
-            }
-        }
-        // Fallback: use the first tenant (single-tenant mode)
-        return tenantRepository.findAll().stream()
-                .findFirst()
-                .map(t -> t.getId())
-                .orElseThrow(() -> new ValidationException(
-                    "No tenant configured. Create a tenant first before signing in with Google."
-                ));
-    }
-
     private void incrementLockout(String key) {
-        redisTemplate.opsForValue().increment(key);
-        redisTemplate.expire(key, LOCKOUT_SECONDS, TimeUnit.SECONDS);
+        Long count = redisTemplate.opsForValue().increment(key);
+        if (count != null && count == 1L) {
+            redisTemplate.expire(key, LOCKOUT_SECONDS, TimeUnit.SECONDS);
+        }
     }
 
     private void validatePasswordStrength(String password) {
@@ -380,42 +408,37 @@ public class AuthController {
             throw new ValidationException("Password must contain at least one special character");
     }
 
-    // ══════════════════════════════════════════════════════════════════════════
-    // DTOs
-    // ══════════════════════════════════════════════════════════════════════════
+    // ── DTOs ──────────────────────────────────────────────────────────────────
 
     @Data public static class LoginRequest {
         @NotBlank @Email private String email;
         @NotBlank        private String password;
     }
 
+    @Data public static class RegisterRequest {
+        @NotBlank @Email                   private String email;
+        @NotBlank @Size(min = 10)          private String password;
+        @NotBlank                          private String firstName;
+        @NotBlank                          private String lastName;
+        @NotBlank @Size(min = 2, max = 50) private String workspaceName;
+    }
+
     @Data public static class GoogleAuthRequest {
-        @NotBlank private String idToken; // Google ID token from frontend
+        @NotBlank private String idToken;
+    }
+
+    @Data public static class CompleteGoogleSignupRequest {
+        @NotBlank                          private String idToken;
+        @NotBlank @Size(min = 2, max = 50) private String workspaceName;
     }
 
     @Data public static class RefreshRequest {
         private String refreshToken;
     }
 
-    @Data public static class RegisterRequest {
-        @NotBlank                    private String tenantId;
-        @NotBlank @Email             private String email;
-        @NotBlank @Size(min = 10)    private String password;
-        @NotBlank                    private String firstName;
-        @NotBlank                    private String lastName;
-    }
-
     public record AuthResponse(
-        String  accessToken,
-        String  refreshToken,
-        long    expiresIn,
-        String  userId,
-        String  email,
-        String  firstName,
-        String  lastName,
-        String  role,
-        String  tenantId,
-        String  avatarUrl,    // populated for Google users
-        String  authProvider  // "LOCAL" | "GOOGLE" | "LINKED"
+        String accessToken, String refreshToken, long expiresIn,
+        String userId, String email, String firstName, String lastName,
+        String role, String tenantId, String avatarUrl, String authProvider
     ) {}
 }

@@ -28,16 +28,9 @@ public class NotificationOutbox {
     @Column(name = "tenant_id", nullable = false)
     private UUID tenantId;
 
-    // ── DB column is UUID type, not VARCHAR ───────────────────────────────
-    // Must declare columnDefinition = "uuid" so Hibernate validation passes.
-    // The field stays as String so existing code (OutboxPublisher, NotificationService)
-    // that sets aggregateId = requestId.toString() continues to work —
-    // Hibernate handles the String→UUID conversion transparently via the
-    // @Column(columnDefinition="uuid") hint.
     @Column(name = "aggregate_id", nullable = false, columnDefinition = "uuid")
     private String aggregateId;
 
-    // ── eventPayload is JSONB in the database ─────────────────────────────
     @Column(name = "event_payload", columnDefinition = "jsonb", nullable = false)
     private String eventPayload;
 
@@ -83,6 +76,7 @@ public class NotificationOutbox {
 
     public enum OutboxStatus {
         PENDING,
+        PROCESSING,  // ← ADDED: marks entry as in-flight to prevent duplicate sends
         SENT,
         FAILED
     }

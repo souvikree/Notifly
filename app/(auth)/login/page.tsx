@@ -186,7 +186,7 @@ function GoogleSignInButton({
         theme="filled_black"
         shape="rectangular"
         size="large"
-        width="100%"
+        width="400"
         text="signin_with"
         useOneTap={false}
       />

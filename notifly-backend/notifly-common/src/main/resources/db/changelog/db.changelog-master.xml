@@ -21,6 +21,8 @@
     <include file="db/changelog/013-add-retry-attempt-failed-notifications.xml"/>
     <include file="db/changelog/014-fix-retry-attempt.xml"/>
     <include file="db/changelog/015-add-enabled-to-user-channel-preferences.xml"/>
+    <include file="db/changelog/020-add-tenant-plan.xml"/>
+
 
 
 </databaseChangeLog>

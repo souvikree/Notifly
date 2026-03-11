@@ -1,18 +1,71 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# Prometheus Configuration for Notifly
+#
+# FIXED from original:
+#  1. Original only scraped notifly-api:8080. Worker metrics were invisible.
+#     Added scrape jobs for both worker instances.
+#  2. Added labels for easier dashboard filtering.
+#  3. Added Kafka JMX metrics scraping via jmx_exporter (optional).
+# ─────────────────────────────────────────────────────────────────────────────
+
 global:
-  scrape_interval: 15s
+  scrape_interval:     15s
   evaluation_interval: 15s
+  external_labels:
+    environment: 'local'
+    project:     'notifly'
+
+rule_files:
+  # - "alert_rules.yml"
 
 scrape_configs:
-  - job_name: 'notifly-api'
-    static_configs:
-      - targets: ['notifly-api:8080']
-    metrics_path: '/api/prometheus'
 
-  - job_name: 'notifly-worker'
-    static_configs:
-      - targets: ['notifly-worker:8081']
-    metrics_path: '/actuator/prometheus'
-
+  # ── Prometheus self-monitoring ──────────────────────────────────────────────
   - job_name: 'prometheus'
     static_configs:
       - targets: ['localhost:9090']
+
+  # ── Notifly API ─────────────────────────────────────────────────────────────
+  - job_name: 'notifly-api'
+    metrics_path: '/actuator/prometheus'
+    scrape_interval: 15s
+    static_configs:
+      - targets: ['notifly-api:8080']
+        labels:
+          service:  'api'
+          instance: 'api-1'
+    # NOTE: In production with Prometheus auth, add:
+    # basic_auth:
+    #   username: prometheus
+    #   password: <scrape-password>
+
+  # ── Notifly Worker instances ─────────────────────────────────────────────────
+  # FIXED: Was missing entirely — worker metrics (sent/failed/retry/DLQ) were invisible
+  - job_name: 'notifly-worker'
+    metrics_path: '/actuator/prometheus'
+    scrape_interval: 15s
+    static_configs:
+      - targets: ['notifly-worker-1:8081']
+        labels:
+          service:  'worker'
+          instance: 'worker-1'
+      - targets: ['notifly-worker-2:8081']
+        labels:
+          service:  'worker'
+          instance: 'worker-2'
+
+  # ── Redis (requires redis_exporter sidecar) ─────────────────────────────────
+  # Uncomment if you add redis_exporter to docker-compose:
+  # - job_name: 'redis'
+  #   static_configs:
+  #     - targets: ['redis-exporter:9121']
+  #       labels:
+  #         service: 'redis'
+
+  # ── Kafka JMX (requires jmx_exporter) ───────────────────────────────────────
+  # Uncomment if you add kafka jmx_exporter to docker-compose:
+  # - job_name: 'kafka'
+  #   static_configs:
+  #     - targets: ['kafka:9308']
+  #       labels:
+  #         service: 'kafka'

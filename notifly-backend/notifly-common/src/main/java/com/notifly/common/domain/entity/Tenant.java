@@ -28,6 +28,25 @@ public class Tenant {
     @Column(nullable = false, unique = true)
     private String slug;
 
+    /**
+     * Plan tier — controls rate limits and feature access.
+     * FREE       → 10,000  requests/month, 60  req/min
+     * STARTER    → 100,000 requests/month, 300 req/min
+     * PRO        → 1,000,000 requests/month, 1000 req/min
+     * ENTERPRISE → unlimited
+     */
+    @Column(nullable = false)
+    @Builder.Default
+    private String plan = "FREE";
+
+    /**
+     * Hard monthly cap enforced by the rate limiter.
+     * Auto-set on signup based on plan.
+     */
+    @Column(nullable = false)
+    @Builder.Default
+    private Integer monthlyRequestLimit = 10000;
+
     @CreationTimestamp
     @Column(nullable = false, updatable = false)
     private Instant createdAt;

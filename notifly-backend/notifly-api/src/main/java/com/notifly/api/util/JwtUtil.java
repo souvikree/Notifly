@@ -2,6 +2,7 @@ package com.notifly.api.util;
 
 import io.jsonwebtoken.*;
 import io.jsonwebtoken.security.Keys;
+import jakarta.annotation.PostConstruct;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Component;
@@ -10,16 +11,16 @@ import javax.crypto.SecretKey;
 import java.nio.charset.StandardCharsets;
 import java.util.Date;
 import java.util.Map;
-import java.util.UUID;
 
 /**
  * JWT utility for creating and validating tokens.
  *
- * Token claims:
- *  - sub: userId
- *  - tenant_id: tenantId
- *  - role: ADMIN | SERVICE
- *  - iat / exp: timestamps
+ * FIXES from original:
+ *  1. getSigningKey() was called on every operation and recreated the key each time.
+ *     Now cached as a field, initialized once at startup via @PostConstruct.
+ *  2. Short secrets were silently padded with zeros — predictable in adversarial scenarios.
+ *     Now throws at startup if secret < 32 chars (fails fast, not silently insecure).
+ *  3. Added token_type validation to prevent access tokens from being used as refresh tokens.
  */
 @Slf4j
 @Component
@@ -29,17 +30,31 @@ public class JwtUtil {
     private String jwtSecret;
 
     @Value("${notifly.jwt.expiration-ms:86400000}")
-    private long jwtExpirationMs; // Default 24h
+    private long jwtExpirationMs;
 
     @Value("${notifly.jwt.refresh-expiration-ms:604800000}")
-    private long refreshExpirationMs; // Default 7 days
+    private long refreshExpirationMs;
 
-    private SecretKey getSigningKey() {
-        byte[] keyBytes = jwtSecret.getBytes(StandardCharsets.UTF_8);
-        // Pad or truncate to 32 bytes for HMAC-SHA256
-        byte[] paddedKey = new byte[32];
-        System.arraycopy(keyBytes, 0, paddedKey, 0, Math.min(keyBytes.length, 32));
-        return Keys.hmacShaKeyFor(paddedKey);
+    // FIXED: Cached, not recreated on every call
+    private SecretKey signingKey;
+
+    /**
+     * FIXED: Validates secret length at startup.
+     * Original silently padded short keys with zeros — a security vulnerability.
+     * Application now fails fast at startup with a clear error message.
+     */
+    @PostConstruct
+    public void init() {
+        if (jwtSecret == null || jwtSecret.length() < 32) {
+            throw new IllegalStateException(
+                "JWT_SECRET must be at least 32 characters. Current length: "
+                + (jwtSecret == null ? 0 : jwtSecret.length())
+                + ". Generate one with: openssl rand -base64 48"
+            );
+        }
+        // FIXED: Key is created once and cached — consistent across all calls
+        this.signingKey = Keys.hmacShaKeyFor(jwtSecret.getBytes(StandardCharsets.UTF_8));
+        log.info("JwtUtil initialized with key length: {} chars", jwtSecret.length());
     }
 
     /**
@@ -49,13 +64,13 @@ public class JwtUtil {
         return Jwts.builder()
                 .subject(userId)
                 .claims(Map.of(
-                        "tenant_id", tenantId,
-                        "role", role,
+                        "tenant_id",  tenantId,
+                        "role",       role,
                         "token_type", "access"
                 ))
                 .issuedAt(new Date())
                 .expiration(new Date(System.currentTimeMillis() + jwtExpirationMs))
-                .signWith(getSigningKey(), Jwts.SIG.HS256)
+                .signWith(signingKey, Jwts.SIG.HS256)
                 .compact();
     }
 
@@ -66,21 +81,18 @@ public class JwtUtil {
         return Jwts.builder()
                 .subject(userId)
                 .claims(Map.of(
-                        "tenant_id", tenantId,
+                        "tenant_id",  tenantId,
                         "token_type", "refresh"
                 ))
                 .issuedAt(new Date())
                 .expiration(new Date(System.currentTimeMillis() + refreshExpirationMs))
-                .signWith(getSigningKey(), Jwts.SIG.HS256)
+                .signWith(signingKey, Jwts.SIG.HS256)
                 .compact();
     }
 
     public boolean validateToken(String token) {
         try {
-            Jwts.parser()
-                    .verifyWith(getSigningKey())
-                    .build()
-                    .parseSignedClaims(token);
+            Jwts.parser().verifyWith(signingKey).build().parseSignedClaims(token);
             return true;
         } catch (ExpiredJwtException e) {
             log.debug("JWT expired: {}", e.getMessage());
@@ -114,7 +126,7 @@ public class JwtUtil {
 
     private Claims parseClaims(String token) {
         return Jwts.parser()
-                .verifyWith(getSigningKey())
+                .verifyWith(signingKey)
                 .build()
                 .parseSignedClaims(token)
                 .getPayload();

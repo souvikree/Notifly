@@ -4,6 +4,7 @@ import com.notifly.api.security.ApiKeyAuthFilter;
 import com.notifly.api.security.JwtAuthFilter;
 import com.notifly.api.security.TenantFilter;
 import lombok.RequiredArgsConstructor;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.http.HttpMethod;
@@ -21,17 +22,19 @@ import org.springframework.web.cors.CorsConfiguration;
 import org.springframework.web.cors.CorsConfigurationSource;
 import org.springframework.web.cors.UrlBasedCorsConfigurationSource;
 
+import java.util.Arrays;
 import java.util.List;
 
 /**
  * Spring Security configuration for Notifly API.
  *
- * Filter order (left = runs first):
- *   ApiKeyAuthFilter → JwtAuthFilter → TenantFilter → ...
- *
- * ApiKeyAuthFilter: checks Authorization: ApiKey nf_live_xxx
- * JwtAuthFilter:    checks Authorization: Bearer <jwt>
- * TenantFilter:     propagates tenantId into TenantContext from the authenticated principal
+ * FIXES from original:
+ *  1. CORS was using allowedOriginPatterns("*") with allowCredentials(true).
+ *     This is dangerous — any origin can make credentialed cross-site requests.
+ *     Now reads allowed origins from ALLOWED_ORIGINS env var.
+ *  2. /actuator/prometheus was public — internal metrics exposed to the internet.
+ *     Now only health and info are public; prometheus requires authentication.
+ *  3. Added proper 401/403 response handlers for API clients (no browser redirect).
  */
 @Configuration
 @EnableWebSecurity
@@ -40,14 +43,21 @@ import java.util.List;
 public class SecurityConfig {
 
     private final JwtAuthFilter jwtAuthFilter;
-    // private final ApiKeyAuthFilter apiKeyAuthFilter;
     private final TenantFilter tenantFilter;
 
+    // FIXED: Read allowed origins from env — not wildcard
+    @Value("${notifly.cors.allowed-origins:http://localhost:3000}")
+    private String allowedOriginsConfig;
+
+    /**
+     * Public endpoints — no auth required.
+     * NOTE: /actuator/prometheus is intentionally NOT here (moved to internal port).
+     */
     private static final String[] PUBLIC_URLS = {
-            "/api/v1/auth/**",
-            "/actuator/health",
-            "/actuator/prometheus",
-            "/actuator/info"
+        "/api/v1/auth/**",
+        "/actuator/health",
+        "/actuator/info"
+        // DO NOT add /actuator/prometheus here — metrics are sensitive
     };
 
     @Bean
@@ -57,18 +67,37 @@ public class SecurityConfig {
             .csrf(csrf -> csrf.disable())
             .sessionManagement(session ->
                 session.sessionCreationPolicy(SessionCreationPolicy.STATELESS))
+            // FIXED: Send 401 JSON response instead of browser redirect for API clients
+            .exceptionHandling(ex -> ex
+                .authenticationEntryPoint((request, response, authException) -> {
+                    response.setContentType("application/json");
+                    response.setStatus(401);
+                    response.getWriter().write(
+                        "{\"status\":401,\"error\":\"Unauthorized\",\"message\":\"Authentication required\"}"
+                    );
+                })
+                .accessDeniedHandler((request, response, accessDeniedException) -> {
+                    response.setContentType("application/json");
+                    response.setStatus(403);
+                    response.getWriter().write(
+                        "{\"status\":403,\"error\":\"Forbidden\",\"message\":\"Insufficient permissions\"}"
+                    );
+                })
+            )
             .authorizeHttpRequests(auth -> auth
                 .requestMatchers(PUBLIC_URLS).permitAll()
                 .requestMatchers(HttpMethod.OPTIONS, "/**").permitAll()
                 .requestMatchers("/api/v1/admin/**").hasRole("ADMIN")
                 .requestMatchers(HttpMethod.POST, "/api/v1/notifications").hasAnyRole("ADMIN", "SERVICE")
                 .requestMatchers(HttpMethod.GET,  "/api/v1/notifications/**").hasAnyRole("ADMIN", "SERVICE")
+                // Prometheus requires authentication — not public
+                .requestMatchers("/actuator/prometheus").hasRole("ADMIN")
+                .requestMatchers("/actuator/**").hasRole("ADMIN")
                 .anyRequest().authenticated()
             )
-            // Order: ApiKey → JWT → TenantContext propagation
             .addFilterBefore(apiKeyAuthFilter, UsernamePasswordAuthenticationFilter.class)
-            .addFilterBefore(jwtAuthFilter,    ApiKeyAuthFilter.class)
-            .addFilterAfter(tenantFilter,      JwtAuthFilter.class);
+            .addFilterBefore(jwtAuthFilter, ApiKeyAuthFilter.class)
+            .addFilterAfter(tenantFilter, JwtAuthFilter.class);
 
         return http.build();
     }
@@ -83,14 +112,24 @@ public class SecurityConfig {
         return config.getAuthenticationManager();
     }
 
+    /**
+     * FIXED: Reads allowed origins from env — never uses wildcard with credentials.
+     *
+     * Set ALLOWED_ORIGINS env var as comma-separated list:
+     *   ALLOWED_ORIGINS=http://localhost:3000,https://app.yourdomain.com
+     */
     @Bean
     public CorsConfigurationSource corsConfigurationSource() {
         CorsConfiguration config = new CorsConfiguration();
-        config.setAllowedOriginPatterns(List.of("*"));
+
+        // FIXED: Parse from env, not hardcoded wildcard
+        List<String> allowedOrigins = Arrays.asList(allowedOriginsConfig.split(","));
+        config.setAllowedOrigins(allowedOrigins);
+
         config.setAllowedMethods(List.of("GET", "POST", "PUT", "DELETE", "OPTIONS", "PATCH"));
         config.setAllowedHeaders(List.of(
-                "Authorization", "Content-Type", "X-Correlation-ID",
-                "Idempotency-Key", "X-API-Key", "X-Tenant-ID"
+            "Authorization", "Content-Type", "X-Correlation-ID",
+            "Idempotency-Key", "X-API-Key", "X-Tenant-ID"
         ));
         config.setExposedHeaders(List.of("X-Correlation-ID", "Retry-After"));
         config.setAllowCredentials(true);

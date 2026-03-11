@@ -14,8 +14,18 @@ import java.util.UUID;
 
 @Repository
 public interface NotificationLogRepository extends JpaRepository<NotificationLog, UUID> {
+
     Optional<NotificationLog> findByTenantIdAndRequestIdAndChannelAndRetryAttempt(
             UUID tenantId, UUID requestId, String channel, Integer attempt);
+
+    // ADDED: Used by NotificationProcessorService.hasSuccessfulDelivery()
+    // Replaces the old findByTenantIdAndRequestIdAndChannelAndRetryAttempt(... 0) check,
+    // which only looked at attempt=0 and missed successes on retry attempts.
+    boolean existsByTenantIdAndRequestIdAndChannelAndStatus(
+            UUID tenantId, UUID requestId, String channel, String status);
+
+    // ADDED: Used by AdminController log retry endpoint
+    Optional<NotificationLog> findByIdAndTenantId(UUID id, UUID tenantId);
 
     List<NotificationLog> findByTenantIdAndRequestId(UUID tenantId, UUID requestId);
 
@@ -27,14 +37,17 @@ public interface NotificationLogRepository extends JpaRepository<NotificationLog
 
     long countByTenantIdAndChannelAndStatus(UUID tenantId, String channel, String status);
 
-    @Query("SELECT AVG(n.providerLatencyMs) FROM NotificationLog n WHERE n.tenantId = :tenantId AND n.status = 'SUCCESS'")
+    // FIXED: was hardcoded status = 'SUCCESS' — worker now writes 'SENT' (CQ-002 fix).
+    // Changed to 'SENT' so latency metrics actually return data.
+    @Query("SELECT AVG(n.providerLatencyMs) FROM NotificationLog n WHERE n.tenantId = :tenantId AND n.status = 'SENT'")
     Double avgLatencyByTenantId(UUID tenantId);
 
-    @Query("""
-                SELECT percentile_cont(0.99) WITHIN GROUP (ORDER BY n.providerLatencyMs)
-                FROM NotificationLog n
-                WHERE n.tenantId = :tenantId AND n.status = 'SUCCESS'
-            """)
+    // FIXED: same — was 'SUCCESS', now 'SENT'
+    @Query(value = """
+                SELECT percentile_cont(0.99) WITHIN GROUP (ORDER BY provider_latency_ms)
+                FROM notification_logs
+                WHERE tenant_id = :tenantId AND status = 'SENT'
+            """, nativeQuery = true)
     Double p99LatencyByTenantId(UUID tenantId);
 
     @Query("""

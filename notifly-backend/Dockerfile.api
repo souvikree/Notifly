@@ -1,26 +1,70 @@
-FROM maven:3.9-eclipse-temurin-21 AS builder
+# ─────────────────────────────────────────────────────────────────────────────
+# Notifly API — Dockerfile
+#
+# FIXES from original:
+#  1. Added dependency caching layer — pom.xml changes don't invalidate source cache.
+#     Before: every code change triggered a full Maven dependency download (3-5 min).
+#     After: deps cached in a separate layer, only re-downloaded when pom.xml changes.
+#  2. Added JVM tuning flags for container environments.
+#  3. Added non-root user for security.
+#  4. Added health check.
+# ─────────────────────────────────────────────────────────────────────────────
+
+# ── Stage 1: Dependency download (cached unless pom.xml changes) ─────────────
+FROM maven:3.9-eclipse-temurin-21-alpine AS deps
 
 WORKDIR /build
 
-# Copy pom files
+# Copy ONLY pom files — this layer is cached until any pom.xml changes
 COPY pom.xml .
 COPY notifly-common/pom.xml ./notifly-common/
-COPY notifly-api/pom.xml ./notifly-api/
+COPY notifly-api/pom.xml    ./notifly-api/
 
-# Copy source
+# Download all dependencies into local Maven cache
+# This layer is ONLY invalidated when pom.xml files change
+RUN mvn dependency:go-offline -pl notifly-api -am -q --no-transfer-progress
+
+# ── Stage 2: Build (cached unless source changes) ────────────────────────────
+FROM deps AS builder
+
+# Copy source code — this layer is invalidated when source changes
 COPY notifly-common/src ./notifly-common/src
-COPY notifly-api/src ./notifly-api/src
+COPY notifly-api/src    ./notifly-api/src
 
-# Build
-RUN mvn clean package -pl notifly-api -am -DskipTests
+# Build using the already-downloaded dependencies
+RUN mvn clean package -pl notifly-api -am -DskipTests -q --no-transfer-progress
 
-FROM eclipse-temurin:21-jre-alpine
+# ── Stage 3: Runtime (minimal JRE image) ─────────────────────────────────────
+FROM eclipse-temurin:21-jre-alpine AS runtime
 
 WORKDIR /app
 
-# Copy jar from builder
-COPY --from=builder /build/notifly-api/target/notifly-api-1.0.0.jar app.jar
+# SECURITY: Run as non-root user
+RUN addgroup -g 1001 notifly && adduser -u 1001 -G notifly -s /bin/sh -D notifly
+USER notifly
+
+# Copy only the compiled jar — not the entire build context
+COPY --from=builder --chown=notifly:notifly \
+    /build/notifly-api/target/notifly-api-1.0.0.jar app.jar
 
 EXPOSE 8080
 
-ENTRYPOINT ["java", "-jar", "app.jar"]
+# Health check — Docker will mark the container unhealthy if this fails
+HEALTHCHECK --interval=30s --timeout=10s --start-period=60s --retries=3 \
+    CMD wget -qO- http://localhost:8080/actuator/health || exit 1
+
+# FIXED: JVM tuning flags for container environments
+# -XX:+UseContainerSupport     → Use container CPU/memory limits (not host)
+# -XX:MaxRAMPercentage=75.0    → Use 75% of container RAM for heap
+# -XX:+UseG1GC                 → G1GC — best for latency-sensitive workloads
+# -XX:+ExitOnOutOfMemoryError  → Crash fast instead of limping along OOM
+# -Djava.security.egd          → Faster SecureRandom (important for JWT signing)
+ENTRYPOINT ["java", \
+  "-XX:+UseContainerSupport", \
+  "-XX:MaxRAMPercentage=75.0", \
+  "-XX:+UseG1GC", \
+  "-XX:G1HeapRegionSize=4m", \
+  "-XX:+ExitOnOutOfMemoryError", \
+  "-Djava.security.egd=file:/dev/./urandom", \
+  "-Dspring.profiles.active=${SPRING_PROFILES_ACTIVE:-production}", \
+  "-jar", "app.jar"]

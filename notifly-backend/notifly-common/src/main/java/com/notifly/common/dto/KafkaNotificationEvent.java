@@ -6,6 +6,7 @@ import lombok.Data;
 import lombok.NoArgsConstructor;
 
 import java.util.List;
+import java.util.Map;
 import java.util.UUID;
 
 @Data
@@ -24,6 +25,12 @@ public class KafkaNotificationEvent {
     private String content;
 
     private List<String> channels;
+
+    // ADDED: Template variable substitution map.
+    // Used by NotificationProcessorService.renderTemplate() to replace {{key}} tokens
+    // in notification templates. Example: {"userName": "Alice", "orderId": "12345"}
+    // Callers populate this when submitting a notification via the API.
+    private Map<String, Object> payload;
 
     private String correlationId;
     private int retryCount;

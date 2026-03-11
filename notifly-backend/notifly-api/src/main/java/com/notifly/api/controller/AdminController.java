@@ -1,19 +1,25 @@
 package com.notifly.api.controller;
 
+import com.fasterxml.jackson.databind.ObjectMapper;
 import com.notifly.api.service.ApiKeyService;
+import com.notifly.common.config.KafkaTopics;
 import com.notifly.common.context.TenantContext;
 import com.notifly.common.domain.entity.ApiKey;
 import com.notifly.common.domain.entity.NotificationTemplate;
 import com.notifly.common.domain.repository.*;
+import com.notifly.common.dto.KafkaNotificationEvent;
 import com.notifly.common.exception.ValidationException;
 import jakarta.validation.Valid;
 import jakarta.validation.constraints.NotBlank;
+import jakarta.validation.constraints.NotNull;
+import jakarta.validation.constraints.Pattern;
 import lombok.Data;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.data.domain.PageRequest;
 import org.springframework.data.domain.Sort;
 import org.springframework.http.ResponseEntity;
+import org.springframework.kafka.core.KafkaTemplate;
 import org.springframework.security.access.prepost.PreAuthorize;
 import org.springframework.web.bind.annotation.*;
 
@@ -32,6 +38,9 @@ public class AdminController {
     private final NotificationTemplateRepository templateRepository;
     private final ApiKeyRepository apiKeyRepository;
     private final ApiKeyService apiKeyService;
+    // ADDED: required for BUG-005 fix — re-publishing DLQ entries to Kafka
+    private final KafkaTemplate<String, String> kafkaTemplate;
+    private final ObjectMapper objectMapper;
 
     // ── Metrics ───────────────────────────────────────────────────────────────
 
@@ -39,10 +48,10 @@ public class AdminController {
     public ResponseEntity<Map<String, Object>> getMetrics() {
         UUID tenantId = TenantContext.getTenantId();
 
-        long total       = logRepository.countByTenantId(tenantId);
-        long succeeded   = logRepository.countByTenantIdAndStatus(tenantId, "SENT");
-        long failed      = logRepository.countByTenantIdAndStatus(tenantId, "FAILED");
-        long dlqCount    = failedNotificationRepository.countByTenantId(tenantId);
+        long total        = logRepository.countByTenantId(tenantId);
+        long succeeded    = logRepository.countByTenantIdAndStatus(tenantId, "SENT");
+        long failed       = logRepository.countByTenantIdAndStatus(tenantId, "FAILED");
+        long dlqCount     = failedNotificationRepository.countByTenantId(tenantId);
         Double avgLatency = logRepository.avgLatencyByTenantId(tenantId);
         Double p99Latency = logRepository.p99LatencyByTenantId(tenantId);
 
@@ -62,15 +71,15 @@ public class AdminController {
         );
 
         Map<String, Object> metrics = new LinkedHashMap<>();
-        metrics.put("totalNotifications", total);
+        metrics.put("totalNotifications",   total);
         metrics.put("successfulDeliveries", succeeded);
-        metrics.put("failedDeliveries", failed);
+        metrics.put("failedDeliveries",     failed);
         metrics.put("pendingNotifications", 0);
-        metrics.put("dlqCount", dlqCount);
-        metrics.put("averageLatency", avgLatency != null ? avgLatency : 0.0);
-        metrics.put("p99Latency", p99Latency != null ? p99Latency : 0.0);
-        metrics.put("successRate", successRate);
-        metrics.put("channelMetrics", Map.of("email", emailStats, "sms", smsStats, "push", pushStats));
+        metrics.put("dlqCount",             dlqCount);
+        metrics.put("averageLatency",       avgLatency != null ? avgLatency : 0.0);
+        metrics.put("p99Latency",           p99Latency != null ? p99Latency : 0.0);
+        metrics.put("successRate",          successRate);
+        metrics.put("channelMetrics",       Map.of("email", emailStats, "sms", smsStats, "push", pushStats));
 
         return ResponseEntity.ok(Map.of("metrics", metrics, "timeSeries", List.of()));
     }
@@ -79,55 +88,228 @@ public class AdminController {
 
     @GetMapping("/logs")
     public ResponseEntity<Map<String, Object>> getLogs(
-            @RequestParam(defaultValue = "0") int page,
+            @RequestParam(defaultValue = "0")  int page,
             @RequestParam(defaultValue = "20") int size,
             @RequestParam(required = false) String status,
             @RequestParam(required = false) String channel,
             @RequestParam(required = false) String search) {
 
         UUID tenantId = TenantContext.getTenantId();
-        var pageable = PageRequest.of(page, size, Sort.by(Sort.Direction.DESC, "createdAt"));
-        var logsPage = logRepository.findByTenantIdWithFilters(tenantId, status, channel, search, pageable);
+        var pageable  = PageRequest.of(page, size, Sort.by(Sort.Direction.DESC, "createdAt"));
+        var logsPage  = logRepository.findByTenantIdWithFilters(tenantId, status, channel, search, pageable);
 
         return ResponseEntity.ok(Map.of(
-                "data", logsPage.getContent(),
-                "total", logsPage.getTotalElements(),
-                "page", page,
-                "size", size,
+                "data",       logsPage.getContent(),
+                "total",      logsPage.getTotalElements(),
+                "page",       page,
+                "size",       size,
                 "totalPages", logsPage.getTotalPages()
         ));
+    }
+
+    // ── Log Retry — INT-002 ───────────────────────────────────────────────────
+
+    /**
+     * ADDED INT-002: Re-queue a notification from the logs page.
+     *
+     * Frontend calls POST /admin/logs/{id}/retry — this endpoint was completely
+     * missing, returning 404 on every retry attempt from the Logs page.
+     *
+     * Looks up the log entry, rebuilds a KafkaNotificationEvent from it,
+     * and re-publishes to notification.events with retryCount reset to 0.
+     */
+    @PostMapping("/logs/{id}/retry")
+    public ResponseEntity<Map<String, String>> retryFromLogs(@PathVariable UUID id) {
+        UUID tenantId = TenantContext.getTenantId();
+        var logEntry = logRepository.findByIdAndTenantId(id, tenantId)
+                .orElseThrow(() -> new ValidationException("Log entry not found: " + id));
+
+        try {
+            List<String> channels = logEntry.getChannel() != null
+                    ? Arrays.asList(logEntry.getChannel().split(","))
+                    : List.of();
+
+            KafkaNotificationEvent retryEvent = KafkaNotificationEvent.builder()
+                    .requestId(logEntry.getRequestId())
+                    .tenantId(logEntry.getTenantId())
+                    .channels(channels)
+                    .correlationId(UUID.randomUUID().toString())
+                    .retryCount(0)
+                    .createdAt(Instant.now().toEpochMilli())
+                    .build();
+
+            String serialized = objectMapper.writeValueAsString(retryEvent);
+            kafkaTemplate.send(KafkaTopics.NOTIFICATION_EVENTS,
+                    logEntry.getRequestId().toString(), serialized);
+
+            log.info("Log retry queued: logId={}, requestId={}, tenantId={}",
+                    id, logEntry.getRequestId(), tenantId);
+
+        } catch (Exception e) {
+            log.error("Failed to re-queue log entry id={}: {}", id, e.getMessage(), e);
+            throw new ValidationException("Failed to re-queue notification: " + e.getMessage());
+        }
+
+        return ResponseEntity.ok(Map.of("status", "RETRY_QUEUED", "id", id.toString()));
     }
 
     // ── Dead Letter Queue ─────────────────────────────────────────────────────
 
     @GetMapping("/dlq")
     public ResponseEntity<Map<String, Object>> getDlq(
-            @RequestParam(defaultValue = "0") int page,
+            @RequestParam(defaultValue = "0")  int page,
             @RequestParam(defaultValue = "20") int size,
             @RequestParam(required = false) String search) {
 
         UUID tenantId = TenantContext.getTenantId();
-        var pageable = PageRequest.of(page, size, Sort.by(Sort.Direction.DESC, "createdAt"));
-        var dlqPage = failedNotificationRepository.findByTenantId(tenantId, pageable);
+        var pageable  = PageRequest.of(page, size, Sort.by(Sort.Direction.DESC, "createdAt"));
+        var dlqPage   = failedNotificationRepository.findByTenantId(tenantId, pageable);
 
         return ResponseEntity.ok(Map.of(
-                "data", dlqPage.getContent(),
+                "data",  dlqPage.getContent(),
                 "total", dlqPage.getTotalElements(),
-                "page", page,
-                "size", size
+                "page",  page,
+                "size",  size
         ));
     }
 
+    /**
+     * FIXED BUG-005: DLQ manual retry now actually re-publishes to Kafka.
+     *
+     * Original just deleted the DB record and returned "RETRY_QUEUED" — nothing
+     * was ever queued. The notification was silently dropped forever.
+     *
+     * Fix:
+     *  1. Rebuild a KafkaNotificationEvent from the FailedNotification record
+     *  2. Reset retryCount to 0 so it gets a full fresh set of retry attempts
+     *  3. Publish to notification.events (the main entry topic)
+     *  4. Record the manual retry attempt on the DB record
+     *  5. Delete the DLQ entry only after successful publish
+     */
     @PostMapping("/dlq/{id}/retry")
     public ResponseEntity<Map<String, String>> retryFromDlq(@PathVariable UUID id) {
         UUID tenantId = TenantContext.getTenantId();
         var failed = failedNotificationRepository.findByIdAndTenantId(id, tenantId)
                 .orElseThrow(() -> new ValidationException("DLQ entry not found: " + id));
 
-        failedNotificationRepository.delete(failed);
-        log.info("Manual DLQ retry triggered: id={}, tenantId={}", id, tenantId);
+        try {
+            // Rebuild the Kafka event from what was persisted in failed_notifications.
+            // channel is stored as comma-separated string (e.g. "EMAIL,SMS") — split it back.
+            List<String> channels = failed.getChannel() != null
+                    ? Arrays.asList(failed.getChannel().split(","))
+                    : List.of();
+
+            KafkaNotificationEvent retryEvent = KafkaNotificationEvent.builder()
+                    .requestId(failed.getRequestId())
+                    .tenantId(failed.getTenantId())
+                    .recipient(failed.getRecipient())
+                    .channels(channels)
+                    .correlationId(UUID.randomUUID().toString()) // fresh correlation ID for tracing
+                    .retryCount(0) // reset — give it a full fresh set of retry attempts
+                    .createdAt(Instant.now().toEpochMilli())
+                    .build();
+
+            // Publish to main entry topic — worker will process and retry normally if needed
+            String serialized = objectMapper.writeValueAsString(retryEvent);
+            kafkaTemplate.send(KafkaTopics.NOTIFICATION_EVENTS,
+                    failed.getRequestId().toString(), serialized);
+
+            // Track the manual retry on the record before deleting it
+            failed.setManualRetryAttempted(true);
+            failed.setManualRetryCount(
+                failed.getManualRetryCount() == null ? 1 : failed.getManualRetryCount() + 1
+            );
+            failedNotificationRepository.save(failed);
+
+            // Delete AFTER successful publish — prevents data loss if Kafka is down
+            failedNotificationRepository.delete(failed);
+
+            log.info("Manual DLQ retry queued: id={}, requestId={}, tenantId={}",
+                    id, failed.getRequestId(), tenantId);
+
+        } catch (Exception e) {
+            log.error("Failed to re-queue DLQ entry id={}: {}", id, e.getMessage(), e);
+            throw new ValidationException("Failed to re-queue notification: " + e.getMessage());
+        }
 
         return ResponseEntity.ok(Map.of("status", "RETRY_QUEUED", "id", id.toString()));
+    }
+
+    /**
+     * ADDED INT-004: Batch retry DLQ entries matching optional filters.
+     *
+     * Frontend's retryByFilter() was Promise.resolve() — silently did nothing.
+     * Users clicking "Retry by filter" thought they triggered a bulk retry
+     * but zero notifications were ever re-queued.
+     *
+     * Accepts: { channel?, errorCode?, search? }
+     * Re-publishes each matching entry to notification.events, then deletes it.
+     * Capped at 100 entries per call to avoid unbounded Kafka bursts.
+     * Returns count of successfully queued entries.
+     */
+    @PostMapping("/dlq/retry-batch")
+    public ResponseEntity<Map<String, Object>> retryBatchFromDlq(
+            @RequestBody BatchRetryRequest request) {
+
+        UUID tenantId = TenantContext.getTenantId();
+        int  cap      = 100; // safety cap — prevent unbounded Kafka bursts
+        var  pageable = PageRequest.of(0, cap, Sort.by(Sort.Direction.ASC, "createdAt"));
+
+        List<com.notifly.common.domain.entity.FailedNotification> entries =
+                failedNotificationRepository.findByTenantIdWithFilters(
+                        tenantId,
+                        request.getChannel(),
+                        request.getErrorCode(),
+                        request.getSearch(),
+                        pageable
+                );
+
+        int queued  = 0;
+        int skipped = 0;
+
+        for (var failed : entries) {
+            try {
+                List<String> channels = failed.getChannel() != null
+                        ? Arrays.asList(failed.getChannel().split(","))
+                        : List.of();
+
+                KafkaNotificationEvent retryEvent = KafkaNotificationEvent.builder()
+                        .requestId(failed.getRequestId())
+                        .tenantId(failed.getTenantId())
+                        .recipient(failed.getRecipient())
+                        .channels(channels)
+                        .correlationId(UUID.randomUUID().toString())
+                        .retryCount(0)
+                        .createdAt(Instant.now().toEpochMilli())
+                        .build();
+
+                String serialized = objectMapper.writeValueAsString(retryEvent);
+                kafkaTemplate.send(KafkaTopics.NOTIFICATION_EVENTS,
+                        failed.getRequestId().toString(), serialized);
+
+                failed.setManualRetryAttempted(true);
+                failed.setManualRetryCount(
+                    failed.getManualRetryCount() == null ? 1 : failed.getManualRetryCount() + 1
+                );
+                failedNotificationRepository.save(failed);
+                failedNotificationRepository.delete(failed);
+                queued++;
+
+            } catch (Exception e) {
+                log.error("Batch retry: failed to re-queue requestId={}: {}",
+                        failed.getRequestId(), e.getMessage());
+                skipped++;
+            }
+        }
+
+        log.info("Batch DLQ retry: tenantId={}, queued={}, skipped={}", tenantId, queued, skipped);
+
+        return ResponseEntity.ok(Map.of(
+            "status",  "BATCH_RETRY_COMPLETE",
+            "queued",  queued,
+            "skipped", skipped,
+            "total",   entries.size()
+        ));
     }
 
     @DeleteMapping("/dlq/{id}")
@@ -142,17 +324,16 @@ public class AdminController {
     @GetMapping("/api-keys")
     public ResponseEntity<List<Map<String, Object>>> getApiKeys() {
         UUID tenantId = TenantContext.getTenantId();
-        // findAllByTenantIdAndRevokedAtIsNull still works — revokedAt field still exists
         var keys = apiKeyRepository.findAllByTenantIdAndRevokedAtIsNull(tenantId);
 
         List<Map<String, Object>> response = keys.stream().map(k -> {
             Map<String, Object> map = new LinkedHashMap<>();
-            map.put("id", k.getId());
+            map.put("id",          k.getId());
             map.put("displayName", k.getDisplayName());
-            map.put("keyPrefix", k.getKeyPrefix() + "****");
-            map.put("role", k.getRole());           // String now — no .name() needed
-            map.put("createdAt", k.getCreatedAt());
-            map.put("revokedAt", k.getRevokedAt());
+            map.put("keyPrefix",   k.getKeyPrefix() + "****");
+            map.put("role",        k.getRole());
+            map.put("createdAt",   k.getCreatedAt());
+            map.put("revokedAt",   k.getRevokedAt());
             return map;
         }).toList();
 
@@ -167,12 +348,12 @@ public class AdminController {
                 tenantId, request.getDisplayName(), request.getRole());
 
         Map<String, Object> response = new LinkedHashMap<>();
-        response.put("id", result.apiKey().getId());
-        response.put("key", result.rawKey());
+        response.put("id",          result.apiKey().getId());
+        response.put("key",         result.rawKey());
         response.put("displayName", result.apiKey().getDisplayName());
-        response.put("role", result.apiKey().getRole());
-        response.put("createdAt", result.apiKey().getCreatedAt());
-        response.put("warning", "Save this key securely. It will not be shown again.");
+        response.put("role",        result.apiKey().getRole());
+        response.put("createdAt",   result.apiKey().getCreatedAt());
+        response.put("warning",     "Save this key securely. It will not be shown again.");
 
         return ResponseEntity.status(201).body(response);
     }
@@ -195,8 +376,6 @@ public class AdminController {
         List<NotificationTemplate> templates =
                 templateRepository.findByTenantIdWithFilters(tenantId, channel, active);
 
-        // Map to plain objects — avoids any Hibernate proxy / lazy-load issues
-        // during Jackson serialization, even if entity changes later.
         List<Map<String, Object>> response = templates.stream().map(t -> {
             Map<String, Object> map = new LinkedHashMap<>();
             map.put("id",        t.getId());
@@ -207,8 +386,6 @@ public class AdminController {
             map.put("content",   t.getContent());
             map.put("version",   t.getVersion());
             map.put("isActive",  t.getIsActive());
-            // variables may be null for rows inserted before the jsonb fix —
-            // return empty list rather than null so the frontend never crashes
             map.put("variables", t.getVariables() != null ? t.getVariables() : List.of());
             map.put("createdAt", t.getCreatedAt());
             map.put("updatedAt", t.getUpdatedAt());
@@ -240,7 +417,6 @@ public class AdminController {
 
         NotificationTemplate saved = templateRepository.save(template);
 
-        // Return same plain-map shape as getTemplates so frontend stays consistent
         Map<String, Object> response = new LinkedHashMap<>();
         response.put("id",        saved.getId());
         response.put("tenantId",  saved.getTenantId());
@@ -291,10 +467,36 @@ public class AdminController {
     // ── Request DTOs ──────────────────────────────────────────────────────────
 
     @Data
+    public static class BatchRetryRequest {
+        private String channel;    // optional — null means all channels
+        private String errorCode;  // optional — e.g. "MAX_RETRIES_EXCEEDED"
+        private String search;     // optional — requestId substring
+    }
+
+    @Data
     public static class CreateApiKeyRequest {
         @NotBlank
         private String displayName;
-        private ApiKey.ApiKeyRole role = ApiKey.ApiKeyRole.SERVICE;
+
+        // FIXED CQ-005: Validate role is one of the allowed enum values.
+        // Without this, "role": "SUPERADMIN" throws an unhandled Jackson 400
+        // with a cryptic error leaking internal class names.
+        // Now returns a clean 400 with an actionable message.
+        @NotNull(message = "role must not be null")
+        @Pattern(
+            regexp = "ADMIN|SERVICE",
+            message = "role must be one of: ADMIN, SERVICE"
+        )
+        private String roleValue = "SERVICE";
+
+        // Convert validated string to enum — never throws because roleValue is pre-validated
+        public ApiKey.ApiKeyRole getRole() {
+            return ApiKey.ApiKeyRole.valueOf(roleValue);
+        }
+
+        public void setRole(String role) {
+            this.roleValue = role != null ? role : "SERVICE";
+        }
     }
 
     @Data

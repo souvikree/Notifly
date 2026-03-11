@@ -18,11 +18,14 @@ import java.util.Map;
 /**
  * Kafka consumer configuration for Notifly Worker.
  *
- * FIXED from original:
- *  - Bootstrap servers now read from environment (was hardcoded to kafka:9092)
- *  - Added error handler with fixed backoff
- *  - Proper manual ack mode
- *  - Added missing topic tolerance
+ * FIXED: Removed container-level retries (was FixedBackOff(1000L, 2L)).
+ * The 5-level application retry topic topology handles all retries.
+ * Container retries were adding 2 hidden retries per failure, making
+ * DB retry counts inconsistent with actual attempt numbers.
+ *
+ * FIXED: Removed setAckAfterMaxAttempts() — that method does not exist
+ * on DefaultErrorHandler. With FixedBackOff(0L, 0L) there are zero
+ * container-level attempts beyond the first, so it was also a no-op.
  */
 @Configuration
 public class KafkaConsumerConfig {
@@ -60,15 +63,16 @@ public class KafkaConsumerConfig {
         factory.setConsumerFactory(consumerFactory());
         factory.setConcurrency(concurrency);
 
-        // Manual acknowledgment — commit only after successful DB write
+        // Manual acknowledgment — offset committed only after successful DB write
         factory.getContainerProperties().setAckMode(ContainerProperties.AckMode.MANUAL_IMMEDIATE);
         factory.getContainerProperties().setPollTimeout(3000);
+        factory.getContainerProperties().setShutdownTimeout(10_000L);
         factory.getContainerProperties().setMissingTopicsFatal(false);
 
-        // Error handler: attempt 3 times with 1s pause, then propagate
-        DefaultErrorHandler errorHandler = new DefaultErrorHandler(
-                new FixedBackOff(1000L, 2L) // 2 retries, 1s apart
-        );
+        // Zero container-level retries — application retry topics handle everything.
+        // FixedBackOff(interval, maxAttempts): 0 interval, 0 extra attempts = fail immediately
+        // and let the listener's catch block route to the next retry topic.
+        DefaultErrorHandler errorHandler = new DefaultErrorHandler(new FixedBackOff(0L, 0L));
         factory.setCommonErrorHandler(errorHandler);
 
         return factory;

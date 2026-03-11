@@ -1,0 +1,38 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<databaseChangeLog
+        xmlns="http://www.liquibase.org/xml/ns/dbchangelog"
+        xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+        xsi:schemaLocation="
+        http://www.liquibase.org/xml/ns/dbchangelog
+        http://www.liquibase.org/xml/ns/dbchangelog/dbchangelog-3.8.xsd">
+
+    <!--
+        Adds plan tier and monthly request limit to tenants.
+
+        Every signup (individual developer or company) gets a FREE plan by default.
+        Limits are enforced by RateLimiterService using the rate_limit_config row
+        that is auto-seeded on signup.
+
+        Plans:
+          FREE       — 10,000  requests/month, 60  req/min
+          STARTER    — 100,000 requests/month, 300 req/min
+          PRO        — 1,000,000 requests/month, 1000 req/min
+          ENTERPRISE — unlimited (enforced per contract)
+    -->
+
+    <changeSet id="020-add-tenant-plan" author="notifly">
+        <sql>
+            ALTER TABLE tenants
+                ADD COLUMN IF NOT EXISTS plan VARCHAR(50) NOT NULL DEFAULT 'FREE'
+                    CHECK (plan IN ('FREE', 'STARTER', 'PRO', 'ENTERPRISE'));
+
+            ALTER TABLE tenants
+                ADD COLUMN IF NOT EXISTS monthly_request_limit INT NOT NULL DEFAULT 10000;
+
+            -- Back-fill existing tenants (e.g. your default seed tenant)
+            UPDATE tenants SET plan = 'FREE', monthly_request_limit = 10000
+            WHERE plan IS NULL OR monthly_request_limit IS NULL;
+        </sql>
+    </changeSet>
+
+</databaseChangeLog>

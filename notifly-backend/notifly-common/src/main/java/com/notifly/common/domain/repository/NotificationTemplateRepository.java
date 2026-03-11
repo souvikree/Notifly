@@ -14,7 +14,6 @@ import java.util.UUID;
 @Repository
 public interface NotificationTemplateRepository extends JpaRepository<NotificationTemplate, UUID> {
 
-    // "active" renamed to "isActive" to match the entity field name
     List<NotificationTemplate> findByTenantIdAndNameAndIsActive(UUID tenantId, String name, Boolean isActive);
 
     Optional<NotificationTemplate> findByTenantIdAndNameAndVersionAndChannel(
@@ -25,6 +24,15 @@ public interface NotificationTemplateRepository extends JpaRepository<Notificati
     Optional<NotificationTemplate> findByIdAndTenantId(UUID id, UUID tenantId);
 
     void deleteByIdAndTenantId(UUID id, UUID tenantId);
+
+    // ADDED: Used by NotificationProcessorService.resolveContent() and resolveSubject()
+    // Finds the most recently created active template for a given tenant + channel.
+    // Spring Data generates: SELECT * FROM notification_templates
+    //   WHERE tenant_id = ? AND channel = ? AND is_active = true
+    //   ORDER BY ??? LIMIT 1
+    // Note: "First" picks the first row — add an explicit @Query with ORDER BY if you
+    // need deterministic ordering (e.g. highest version first).
+    Optional<NotificationTemplate> findFirstByTenantIdAndChannelAndIsActiveTrue(UUID tenantId, String channel);
 
     @Query("SELECT MAX(t.version) FROM NotificationTemplate t WHERE t.tenantId = :tenantId AND t.name = :name")
     Optional<Integer> findMaxVersionByTenantIdAndName(UUID tenantId, String name);

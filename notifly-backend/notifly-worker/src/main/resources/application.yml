@@ -70,9 +70,20 @@ spring:
       retries: 5
       key-serializer: org.apache.kafka.common.serialization.StringSerializer
       value-serializer: org.springframework.kafka.support.serializer.JsonSerializer
+    # FIXED INF-004: Allow current Kafka poll to finish before shutdown.
+    # Without this, SIGTERM interrupts mid-poll and the in-flight message
+    # is redelivered (or lost if auto-commit was about to fire).
+    listener:
+      shutdown-timeout: 10000
+
+  # FIXED INF-004: Give in-flight processing up to 30s to complete on shutdown.
+  lifecycle:
+    timeout-per-shutdown-phase: 30s
 
 server:
   port: ${WORKER_PORT:8081}
+  # FIXED INF-004: Graceful shutdown — waits for active requests before stopping.
+  shutdown: graceful
 
 management:
   endpoints:

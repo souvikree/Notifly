@@ -18,12 +18,15 @@ import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
-import java.security.MessageDigest;
-import java.util.Base64;
 import java.util.Map;
 import java.util.Optional;
 import java.util.UUID;
 
+/**
+ * FIXED CQ-003: Removed inline idempotency check and duplicate computeHash().
+ * NotificationService now delegates entirely to IdempotencyService — single
+ * source of truth for idempotency logic including payload hash validation.
+ */
 @Slf4j
 @Service
 @RequiredArgsConstructor
@@ -47,14 +50,15 @@ public class NotificationService {
 
         String recipientAddress = extractRecipientAddress(request);
 
-        // Idempotency check
+        // FIXED CQ-003: Delegate to IdempotencyService — no more inline DB query.
+        // IdempotencyService also validates that a reused key has the same payload,
+        // throwing IdempotencyException if the payload differs (CQ-003 bonus fix).
         if (idempotencyKey != null) {
             Optional<NotificationRequest> existing =
-                requestRepository.findByTenantIdAndIdempotencyKey(tenantId, idempotencyKey);
+                idempotencyService.checkIdempotency(tenantId, idempotencyKey, request);
             if (existing.isPresent()) {
                 log.info("[{}] Idempotent request for key: {}", correlationId, idempotencyKey);
                 return NotificationResponseDTO.builder()
-                        // requestId in entity is UUID — convert to String for DTO
                         .requestId(existing.get().getRequestId().toString())
                         .status(NotificationStatus.ACCEPTED.name())
                         .message("Request accepted (duplicate)")
@@ -68,14 +72,13 @@ public class NotificationService {
                     ? UUID.fromString(request.getRequestId())
                     : UUID.randomUUID();
 
+            // FIXED CQ-003: Use IdempotencyService.computePayloadHash() — no duplicate hash logic.
             String payloadJson = objectMapper.writeValueAsString(request);
-            String payloadHash = computeHash(payloadJson);
+            String payloadHash = idempotencyService.computePayloadHash(request);
 
-            // requestId is UUID in the entity — pass directly
-            // userId and recipientAddress removed (don't exist in DB)
             NotificationRequest notifRequest = NotificationRequest.builder()
                     .tenantId(tenantId)
-                    .requestId(requestId)           // UUID
+                    .requestId(requestId)
                     .idempotencyKey(idempotencyKey)
                     .payloadHash(payloadHash)
                     .payload(payloadJson)
@@ -109,7 +112,7 @@ public class NotificationService {
             log.debug("[{}] Outbox entry created for: {}", correlationId, requestId);
 
             return NotificationResponseDTO.builder()
-                    .requestId(requestId.toString())    // DTO expects String
+                    .requestId(requestId.toString())
                     .status(NotificationStatus.ACCEPTED.name())
                     .message("Notification request accepted")
                     .correlationId(correlationId)
@@ -118,7 +121,7 @@ public class NotificationService {
         } catch (DataIntegrityViolationException e) {
             log.info("[{}] Duplicate detected via DB constraint", correlationId);
             return NotificationResponseDTO.builder()
-                    .requestId(request.getRequestId())  // already a String from DTO
+                    .requestId(request.getRequestId())
                     .status(NotificationStatus.ACCEPTED.name())
                     .message("Request accepted (duplicate)")
                     .correlationId(correlationId)
@@ -134,7 +137,6 @@ public class NotificationService {
         UUID tenantId = UUID.fromString(tenantIdStr);
         UUID requestUUID = UUID.fromString(requestId);
 
-        // findByTenantIdAndRequestId now takes UUID for both args
         Optional<NotificationRequest> request =
             requestRepository.findByTenantIdAndRequestId(tenantId, requestUUID);
 
@@ -159,14 +161,5 @@ public class NotificationService {
         return request.getRecipient().getOrDefault("email",
                 request.getRecipient().getOrDefault("phone",
                         request.getRecipient().getOrDefault("deviceToken", "")));
-    }
-
-    private String computeHash(String input) {
-        try {
-            MessageDigest digest = MessageDigest.getInstance("SHA-256");
-            return Base64.getEncoder().encodeToString(digest.digest(input.getBytes()));
-        } catch (Exception e) {
-            return UUID.randomUUID().toString();
-        }
     }
 }

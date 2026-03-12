@@ -17,10 +17,11 @@ import { toast } from "sonner";
 import { motion } from "framer-motion";
 import { Bell, Loader2 } from "lucide-react";
 import { authService } from "@/lib/api-services";
+import type { AuthResponse } from "@/lib/types";
 
 export default function RegisterPage() {
   const router = useRouter();
-  const { register } = useAuth();
+  const { register, setAuthFromResponse } = useAuth();
 
   const [firstName,       setFirstName]       = useState("");
   const [lastName,        setLastName]        = useState("");
@@ -54,23 +55,22 @@ export default function RegisterPage() {
     }
   };
 
-  // Google signup — backend returns 202 if new user needs onboarding
   const handleGoogleSuccess = async (cred: { credential?: string }) => {
     if (!cred.credential) { toast.error("Google sign-up failed."); return; }
     setIsGoogleLoading(true);
     try {
       const response = await authService.googleAuth(cred.credential);
 
-      // New user — needs to pick a workspace name
+      // Case 1: Brand new Google user — needs workspace name
       if ((response as any).needsOnboarding) {
-        const profile = (response as any).profile;
-        // Pass profile to onboarding page via sessionStorage
-        sessionStorage.setItem("googleOnboarding", JSON.stringify(profile));
+        sessionStorage.setItem("googleOnboarding", JSON.stringify((response as any).profile));
         router.push("/onboarding");
         return;
       }
 
-      // Existing user — tokens returned directly, handled by auth context
+      // Case 2: Google account already exists — persist tokens then redirect
+      // Without setAuthFromResponse the user is redirected but not actually logged in
+      setAuthFromResponse(response as AuthResponse);
       router.push("/dashboard");
     } catch (err: any) {
       toast.error(err?.message ?? "Google sign-up failed.");
@@ -100,7 +100,6 @@ export default function RegisterPage() {
         </CardHeader>
 
         <CardContent className="space-y-4">
-          {/* Google Sign-Up */}
           {isGoogleLoading ? (
             <Button variant="outline" className="w-full" disabled>
               <Loader2 className="mr-2 h-4 w-4 animate-spin" />

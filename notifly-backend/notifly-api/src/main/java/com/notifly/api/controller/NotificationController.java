@@ -1,6 +1,5 @@
 package com.notifly.api.controller;
 
-import com.notifly.api.service.IdempotencyService;
 import com.notifly.api.service.NotificationService;
 import com.notifly.api.service.RateLimiterService;
 import com.notifly.common.dto.NotificationRequestDTO;
@@ -15,7 +14,6 @@ import org.springframework.http.ResponseEntity;
 import org.springframework.security.core.Authentication;
 import org.springframework.web.bind.annotation.*;
 
-import java.util.HashMap;
 import java.util.Map;
 import java.util.UUID;
 
@@ -27,6 +25,11 @@ import java.util.UUID;
  *  - Service call now matches updated NotificationService signature
  *  - Rate limit call uses UUID tenantId correctly
  *  - tenantId is extracted from Authentication principal (set by JWT/ApiKey filters)
+ *
+ * BUG-007 FIX: getStatus() now validates requestId is a well-formed UUID before
+ * calling the service. Previously UUID.fromString() inside the service threw
+ * IllegalArgumentException which bubbled up as an unhandled 500 with a stack trace.
+ * Now returns a clean 400 ValidationException instead.
  */
 @Slf4j
 @RestController
@@ -80,11 +83,23 @@ public class NotificationController {
     /**
      * GET /api/v1/notifications/{requestId}
      * Check status of a submitted notification.
+     *
+     * BUG-007 FIX: Validate requestId is a valid UUID before calling the service.
+     * Without this, a non-UUID path segment (e.g. "not-a-uuid") causes
+     * UUID.fromString() inside NotificationService to throw IllegalArgumentException,
+     * which propagates as an unhandled 500 and leaks a stack trace to the caller.
      */
     @GetMapping("/{requestId}")
     public ResponseEntity<Map<String, Object>> getStatus(
             @PathVariable String requestId,
             Authentication authentication) {
+
+        // Validate early — return 400 before touching the service layer
+        try {
+            UUID.fromString(requestId);
+        } catch (IllegalArgumentException e) {
+            throw new ValidationException("requestId must be a valid UUID (e.g. 123e4567-e89b-12d3-a456-426614174000)");
+        }
 
         String tenantId = (String) authentication.getPrincipal();
         Map<String, Object> status = notificationService.getNotificationStatus(tenantId, requestId);

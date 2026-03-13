@@ -11,11 +11,25 @@ const apiClient = axios.create({
   },
 });
 
-// ── Request interceptor: attach JWT ──────────────────────────
+// ── Cookie helper — mirrors auth-context.tsx exactly ─────────────────────────
+// FIXED SEC-002: was SameSite=Lax — downgraded CSRF protection after every
+// silent token refresh. Now always Strict + Secure on HTTPS, matching auth-context.
+function setAuthCookie(token: string) {
+  const secure = window.location.protocol === "https:" ? "; Secure" : "";
+  document.cookie = `notifly_access_token=${encodeURIComponent(token)}; path=/; SameSite=Strict${secure}`;
+}
+
+function clearAuthCookie() {
+  document.cookie = "notifly_access_token=; expires=Thu, 01 Jan 1970 00:00:00 GMT; path=/; SameSite=Strict";
+}
+
+// ── Request interceptor: attach JWT ──────────────────────────────────────────
 apiClient.interceptors.request.use(
   (config: InternalAxiosRequestConfig) => {
     if (typeof window !== "undefined") {
-      const token = localStorage.getItem("notifly_access_token");
+      const token =
+        sessionStorage.getItem("notifly_access_token") ??
+        localStorage.getItem("notifly_access_token");
       if (token && config.headers) {
         config.headers.Authorization = `Bearer ${token}`;
       }
@@ -25,7 +39,7 @@ apiClient.interceptors.request.use(
   (error) => Promise.reject(error)
 );
 
-// ── Response interceptor: refresh token on 401, handle errors ─
+// ── Response interceptor: refresh token on 401, handle errors ────────────────
 let isRefreshing = false;
 let failedQueue: Array<{
   resolve: (value: unknown) => void;
@@ -44,13 +58,13 @@ apiClient.interceptors.response.use(
   (response) => response,
   async (error: AxiosError<{ message?: string }>) => {
     const originalRequest = error.config as InternalAxiosRequestConfig & { _retry?: boolean };
-    const status = error.response?.status;
+    const status  = error.response?.status;
     const message = error.response?.data?.message || error.message;
 
-    // ── 401: try to refresh token before logging out ──
+    // ── 401: try to refresh token before logging out ──────────────────────────
     if (status === 401 && !originalRequest._retry) {
       if (isRefreshing) {
-        // Queue request until refresh completes
+        // Queue request until the in-flight refresh completes
         return new Promise((resolve, reject) => {
           failedQueue.push({ resolve, reject });
         }).then((token) => {
@@ -65,16 +79,26 @@ apiClient.interceptors.response.use(
       isRefreshing = true;
 
       const refreshToken =
-        typeof window !== "undefined" ? localStorage.getItem("notifly_refresh_token") : null;
+        typeof window !== "undefined"
+          ? (sessionStorage.getItem("notifly_refresh_token") ??
+             localStorage.getItem("notifly_refresh_token"))
+          : null;
 
       if (refreshToken) {
         try {
           const response = await axios.post(`${API_BASE_URL}/auth/refresh`, { refreshToken });
-          const { accessToken } = response.data;
+          const { accessToken, refreshToken: newRefreshToken } = response.data;
 
-          localStorage.setItem("notifly_access_token", accessToken);
-          // Update cookie for middleware
-          document.cookie = `notifly_access_token=${encodeURIComponent(accessToken)}; path=/; SameSite=Lax`;
+          // Persist updated tokens — keep sessionStorage + localStorage in sync
+          sessionStorage.setItem("notifly_access_token",  accessToken);
+          localStorage.setItem("notifly_access_token",   accessToken);
+          if (newRefreshToken) {
+            sessionStorage.setItem("notifly_refresh_token", newRefreshToken);
+            localStorage.setItem("notifly_refresh_token",  newRefreshToken);
+          }
+
+          // FIXED SEC-002: SameSite=Strict + Secure on HTTPS — matches auth-context.tsx
+          setAuthCookie(accessToken);
 
           processQueue(null, accessToken);
           isRefreshing = false;
@@ -86,20 +110,23 @@ apiClient.interceptors.response.use(
         } catch (refreshError) {
           processQueue(refreshError, null);
           isRefreshing = false;
-          // Refresh failed — clear all auth state and redirect
+
+          // Refresh failed — wipe all auth state and send to login
           if (typeof window !== "undefined") {
-            localStorage.removeItem("notifly_access_token");
-            localStorage.removeItem("notifly_refresh_token");
-            localStorage.removeItem("notifly_user");
-            document.cookie = "notifly_access_token=; expires=Thu, 01 Jan 1970 00:00:00 GMT; path=/";
+            ["notifly_access_token", "notifly_refresh_token", "notifly_user"].forEach((k) => {
+              localStorage.removeItem(k);
+              sessionStorage.removeItem(k);
+            });
+            clearAuthCookie();
             window.location.href = "/login";
           }
         }
       } else {
-        // No refresh token at all — go to login
+        // No refresh token at all — go straight to login
         if (typeof window !== "undefined") {
           localStorage.clear();
-          document.cookie = "notifly_access_token=; expires=Thu, 01 Jan 1970 00:00:00 GMT; path=/";
+          sessionStorage.clear();
+          clearAuthCookie();
           window.location.href = "/login";
         }
       }

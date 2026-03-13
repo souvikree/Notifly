@@ -26,6 +26,17 @@ import org.springframework.stereotype.Component;
 @Component
 public class SmsSender implements ChannelSender {
 
+    /**
+     * CQ-002 FIX: Was 1600 — a typo that made every "truncated" SMS cost 10x more.
+     *
+     * 160 GSM-7 characters = exactly 1 SMS segment = 1 billing unit.
+     * If you intentionally want multi-part SMS (each segment still billed separately):
+     *   - GSM-7 encoding:  153 chars per segment (UDH header overhead)
+     *   - Unicode/UCS-2:   67 chars per segment
+     * Adjust this constant and the comment to match your billing preference.
+     */
+    private static final int MAX_SMS_LENGTH = 160;
+
     @Value("${notifly.twilio.account-sid:}")
     private String accountSid;
 
@@ -71,8 +82,11 @@ public class SmsSender implements ChannelSender {
         }
 
         try {
-            // Truncate SMS to 160 chars (1 segment) — longer messages cost more
-            String smsBody = content != null && content.length() > 1600 ? content.substring(0, 1600) : content;
+            // CQ-002 FIX: truncate to MAX_SMS_LENGTH (160) = 1 GSM segment = 1 billing unit.
+            // The previous value of 1600 would send up to 10 segments per message.
+            String smsBody = content != null && content.length() > MAX_SMS_LENGTH
+                    ? content.substring(0, MAX_SMS_LENGTH)
+                    : content;
 
             Message message = Message.creator(
                     new PhoneNumber(recipient),

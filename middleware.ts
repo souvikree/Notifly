@@ -2,9 +2,11 @@ import { NextResponse } from "next/server";
 import type { NextRequest } from "next/server";
 
 // Routes that don't require authentication
-const PUBLIC_ROUTES = ["/login", "/register", "/forgot-password"];
+const PUBLIC_ROUTES = ["/login", "/register", "/forgot-password", "/onboarding"];
 
 // Routes that should redirect to /dashboard if already authenticated
+// NOTE: /onboarding is intentionally NOT here — an authenticated user with a
+// linked Google account can still legitimately land on /onboarding.
 const AUTH_ROUTES = ["/login", "/register", "/forgot-password"];
 
 export function middleware(request: NextRequest) {

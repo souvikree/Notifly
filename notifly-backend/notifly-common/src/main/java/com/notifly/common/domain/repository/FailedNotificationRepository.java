@@ -28,23 +28,47 @@ public interface FailedNotificationRepository extends JpaRepository<FailedNotifi
 
     void deleteByIdAndTenantId(UUID id, UUID tenantId);
 
-    // ADDED: Used by AdminController.retryBatchFromDlq() (INT-004)
-    // Supports filtering by channel, errorCode, and search (requestId substring).
-    // All filter params are optional — null means "match all".
-    // Capped at a max batch size in the controller to avoid unbounded queries.
-    @Query("""
-        SELECT f FROM FailedNotification f
-        WHERE f.tenantId = :tenantId
-        AND (:channel   IS NULL OR f.channel   = :channel)
-        AND (:errorCode IS NULL OR f.errorCode = :errorCode)
-        AND (:search    IS NULL OR CAST(f.requestId AS string) LIKE %:search%)
-        ORDER BY f.createdAt ASC
-    """)
+    /**
+     * BUG-005 FIX: Replaced JPQL CAST(f.requestId AS string) with a native query.
+     *
+     * Same root cause as NotificationLogRepository.findByTenantIdWithFilters —
+     * "string" is a non-standard Hibernate type alias that throws SemanticException
+     * on some Hibernate 6 / PostgreSQL combinations.
+     *
+     * Native query uses CAST(request_id AS TEXT) (standard PostgreSQL).
+     * CONCAT('%', :search, '%') replaces the JPQL %:search% syntax.
+     *
+     * The explicit countQuery is required: Spring Data cannot auto-derive a
+     * COUNT from a native SELECT * query. Both queries share identical WHERE
+     * clauses so totals are always consistent with page contents.
+     *
+     * Used by AdminController.retryBatchFromDlq(). All filter params are
+     * optional — passing null matches all rows for that filter.
+     */
+    @Query(
+        value = """
+            SELECT *
+            FROM failed_notifications
+            WHERE tenant_id = :tenantId
+              AND (:channel   IS NULL OR channel    = :channel)
+              AND (:errorCode IS NULL OR error_code = :errorCode)
+              AND (:search    IS NULL OR CAST(request_id AS TEXT) LIKE CONCAT('%', :search, '%'))
+            ORDER BY created_at ASC
+            """,
+        countQuery = """
+            SELECT COUNT(*)
+            FROM failed_notifications
+            WHERE tenant_id = :tenantId
+              AND (:channel   IS NULL OR channel    = :channel)
+              AND (:errorCode IS NULL OR error_code = :errorCode)
+              AND (:search    IS NULL OR CAST(request_id AS TEXT) LIKE CONCAT('%', :search, '%'))
+            """,
+        nativeQuery = true
+    )
     List<FailedNotification> findByTenantIdWithFilters(
-        @Param("tenantId")  UUID   tenantId,
-        @Param("channel")   String channel,
-        @Param("errorCode") String errorCode,
-        @Param("search")    String search,
-        Pageable pageable
-    );
+            @Param("tenantId")  UUID   tenantId,
+            @Param("channel")   String channel,
+            @Param("errorCode") String errorCode,
+            @Param("search")    String search,
+            Pageable pageable);
 }

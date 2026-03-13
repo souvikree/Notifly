@@ -23,9 +23,15 @@ import java.util.Optional;
 import java.util.UUID;
 
 /**
- * FIXED CQ-003: Removed inline idempotency check and duplicate computeHash().
- * NotificationService now delegates entirely to IdempotencyService — single
- * source of truth for idempotency logic including payload hash validation.
+ * CQ-003 FIX: Eliminated double JSON serialization.
+ *
+ * Previously:
+ *   payloadJson = objectMapper.writeValueAsString(request);  // serialization #1
+ *   payloadHash = idempotencyService.computePayloadHash(request); // serialization #2 internally
+ *
+ * Now:
+ *   payloadJson = objectMapper.writeValueAsString(request);  // only once
+ *   payloadHash = idempotencyService.computePayloadHashFromJson(payloadJson); // reuses the string
  */
 @Slf4j
 @Service
@@ -50,9 +56,6 @@ public class NotificationService {
 
         String recipientAddress = extractRecipientAddress(request);
 
-        // FIXED CQ-003: Delegate to IdempotencyService — no more inline DB query.
-        // IdempotencyService also validates that a reused key has the same payload,
-        // throwing IdempotencyException if the payload differs (CQ-003 bonus fix).
         if (idempotencyKey != null) {
             Optional<NotificationRequest> existing =
                 idempotencyService.checkIdempotency(tenantId, idempotencyKey, request);
@@ -72,9 +75,11 @@ public class NotificationService {
                     ? UUID.fromString(request.getRequestId())
                     : UUID.randomUUID();
 
-            // FIXED CQ-003: Use IdempotencyService.computePayloadHash() — no duplicate hash logic.
+            // CQ-003 FIX: serialize once, pass the JSON string directly to the hash method.
+            // The old computePayloadHash(request) re-serialized the DTO internally,
+            // causing two ObjectMapper.writeValueAsString() calls per request.
             String payloadJson = objectMapper.writeValueAsString(request);
-            String payloadHash = idempotencyService.computePayloadHash(request);
+            String payloadHash = idempotencyService.computePayloadHashFromJson(payloadJson);
 
             NotificationRequest notifRequest = NotificationRequest.builder()
                     .tenantId(tenantId)
@@ -147,11 +152,11 @@ public class NotificationService {
         var logs = logRepository.findByTenantIdAndRequestId(tenantId, requestUUID);
 
         return Map.of(
-                "requestId", requestId,
-                "status", logs.isEmpty() ? "PENDING"
-                        : logs.stream().anyMatch(l -> "SENT".equals(l.getStatus())) ? "DELIVERED" : "FAILED",
+                "requestId",    requestId,
+                "status",       logs.isEmpty() ? "PENDING"
+                                : logs.stream().anyMatch(l -> "SENT".equals(l.getStatus())) ? "DELIVERED" : "FAILED",
                 "deliveryLogs", logs,
-                "createdAt", request.get().getCreatedAt());
+                "createdAt",    request.get().getCreatedAt());
     }
 
     private String extractRecipientAddress(NotificationRequestDTO request) {

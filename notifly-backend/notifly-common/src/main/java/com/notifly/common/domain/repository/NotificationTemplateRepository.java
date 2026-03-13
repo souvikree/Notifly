@@ -25,13 +25,6 @@ public interface NotificationTemplateRepository extends JpaRepository<Notificati
 
     void deleteByIdAndTenantId(UUID id, UUID tenantId);
 
-    // ADDED: Used by NotificationProcessorService.resolveContent() and resolveSubject()
-    // Finds the most recently created active template for a given tenant + channel.
-    // Spring Data generates: SELECT * FROM notification_templates
-    //   WHERE tenant_id = ? AND channel = ? AND is_active = true
-    //   ORDER BY ??? LIMIT 1
-    // Note: "First" picks the first row — add an explicit @Query with ORDER BY if you
-    // need deterministic ordering (e.g. highest version first).
     Optional<NotificationTemplate> findFirstByTenantIdAndChannelAndIsActiveTrue(UUID tenantId, String channel);
 
     @Query("SELECT MAX(t.version) FROM NotificationTemplate t WHERE t.tenantId = :tenantId AND t.name = :name")
@@ -47,4 +40,22 @@ public interface NotificationTemplateRepository extends JpaRepository<Notificati
             @Param("tenantId") UUID tenantId,
             @Param("channel") String channel,
             @Param("active") Boolean active);
+
+    /**
+     * CQ-005: Fetch all versions of a template by name within a tenant.
+     * Used by AdminController.getTemplateVersions() to power the version
+     * history tab in the template editor UI.
+     *
+     * Returns all rows for the given tenant + name, ordered oldest → newest
+     * so the frontend can display a chronological history list.
+     */
+    @Query("""
+                SELECT t FROM NotificationTemplate t
+                WHERE t.tenantId = :tenantId
+                  AND t.name     = :name
+                ORDER BY t.version ASC
+            """)
+    List<NotificationTemplate> findAllByTenantIdAndName(
+            @Param("tenantId") UUID tenantId,
+            @Param("name")     String name);
 }

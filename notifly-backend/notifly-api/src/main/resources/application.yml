@@ -71,7 +71,6 @@ spring:
       key-deserializer: org.apache.kafka.common.serialization.StringDeserializer
       value-deserializer: org.apache.kafka.common.serialization.StringDeserializer
 
-  # Graceful shutdown — allow in-flight requests to complete before stopping
   lifecycle:
     timeout-per-shutdown-phase: 30s
 
@@ -88,7 +87,26 @@ server:
       max: 200
       min-spare: 10
 
+# ── Management / Actuator ─────────────────────────────────────────────────────
+# INF-001 FIX: Actuator runs on a dedicated internal port (9091) that is
+# separate from the main API port (8080).
+#
+# Why this works:
+#   Spring Boot's management server is an entirely separate embedded Tomcat
+#   (or Netty) instance. The SecurityFilterChain in SecurityConfig.java only
+#   applies to the main server port. The management port has no security filter
+#   chain by default, so Prometheus can scrape /actuator/prometheus freely.
+#
+# Production checklist:
+#   - Do NOT add a "ports: - 9091:9091" mapping in docker-compose.yml.
+#     Prometheus reaches it via the internal Docker network (container-to-container).
+#   - If you use an external load balancer (nginx, ALB), ensure port 9091
+#     is NOT in the listener rules.
+#   - For extra hardness, set management.server.address to 127.0.0.1 on
+#     bare-metal deployments (not needed inside Docker).
 management:
+  server:
+    port: ${MANAGEMENT_PORT:9091}   # ← internal only, never expose externally
   endpoints:
     web:
       exposure:
@@ -113,10 +131,6 @@ notifly:
     expiration-ms: ${JWT_EXPIRY_MS:86400000}
     refresh-expiration-ms: ${JWT_REFRESH_EXPIRY_MS:604800000}
 
-  # ── CORS — required by SecurityConfig.java ───────────────────────────────
-  # Set ALLOWED_ORIGINS env var as comma-separated list of trusted frontend origins.
-  # Example: ALLOWED_ORIGINS=http://localhost:3000,https://app.yourdomain.com
-  # Default allows local development only.
   cors:
     allowed-origins: ${ALLOWED_ORIGINS:http://localhost:3000}
 
@@ -142,7 +156,12 @@ notifly:
     max-retry-count: ${OUTBOX_MAX_RETRY:3}
     recovery-interval: ${OUTBOX_RECOVERY_MS:30000}
 
-  default-tenant-id: ${NOTIFLY_DEFAULT_TENANT_ID:}
+  sendgrid:
+    api-key: ${SENDGRID_API_KEY:}
+    from-email: ${SENDGRID_FROM_EMAIL:noreply@notifly.io}
+    from-name: ${SENDGRID_FROM_NAME:Notifly}
+
+  frontend-url: ${FRONTEND_URL:http://localhost:3000}
 
 # ── Google OAuth2 ─────────────────────────────────────────────────────────────
 google:

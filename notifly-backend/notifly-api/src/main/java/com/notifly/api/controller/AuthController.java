@@ -22,16 +22,17 @@ import org.springframework.http.ResponseEntity;
 import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.web.bind.annotation.*;
 
-import java.util.Map;
-import java.util.Optional;
-import java.util.UUID;
-import java.util.concurrent.TimeUnit;
-
 import com.google.api.client.googleapis.auth.oauth2.GoogleIdToken;
 import com.google.api.client.googleapis.auth.oauth2.GoogleIdTokenVerifier;
 import com.google.api.client.http.javanet.NetHttpTransport;
 import com.google.api.client.json.gson.GsonFactory;
-import java.util.Collections;
+import com.sendgrid.*;
+import com.sendgrid.helpers.mail.Mail;
+import com.sendgrid.helpers.mail.objects.Content;
+
+import java.io.IOException;
+import java.util.*;
+import java.util.concurrent.TimeUnit;
 
 /**
  * Authentication controller.
@@ -48,6 +49,12 @@ import java.util.Collections;
  *   → Frontend shows /onboarding page
  *   → User enters workspace name → POST /auth/complete-google-signup
  *   → Tenant + user created → tokens issued
+ *
+ * FIXES (SEC-003):
+ *   - forgotPassword: added null/blank check on email to prevent NPE
+ *   - forgotPassword: now sends a real reset email via SendGrid
+ *                     (dev-mode no-op when SENDGRID_API_KEY is not set)
+ *   - Added POST /auth/reset-password endpoint to consume the token
  */
 @Slf4j
 @RestController
@@ -64,6 +71,21 @@ public class AuthController {
 
     @Value("${google.client-id:}")
     private String googleClientId;
+
+    // SendGrid — same env vars used by the worker's EmailSender
+    @Value("${notifly.sendgrid.api-key:}")
+    private String sendGridApiKey;
+
+    @Value("${notifly.sendgrid.from-email:noreply@notifly.io}")
+    private String fromEmail;
+
+    @Value("${notifly.sendgrid.from-name:Notifly}")
+    private String fromName;
+
+    // The public URL of the frontend — used to build the reset link.
+    // Set FRONTEND_URL=https://app.yourdomain.com in production env.
+    @Value("${notifly.frontend-url:http://localhost:3000}")
+    private String frontendUrl;
 
     private static final int  MAX_FAILED_ATTEMPTS = 5;
     private static final long LOCKOUT_SECONDS     = 900;
@@ -257,7 +279,7 @@ public class AuthController {
         return ResponseEntity.status(201).body(issueTokensFor(user));
     }
 
-    // ── 5. Refresh Token (SEC-004 rotation) ───────────────────────────────────
+    // ── 5. Refresh Token ──────────────────────────────────────────────────────
 
     @PostMapping("/refresh")
     public ResponseEntity<Map<String, String>> refresh(@Valid @RequestBody RefreshRequest request) {
@@ -312,19 +334,86 @@ public class AuthController {
 
     // ── 7. Forgot Password ────────────────────────────────────────────────────
 
+    /**
+     * FIXED SEC-003 Part 1: Added null/blank check on email to prevent NPE.
+     * FIXED SEC-003 Part 2: Now sends a real password reset email via SendGrid.
+     *
+     * Dev mode (SENDGRID_API_KEY not set): logs the reset link instead of sending.
+     * Always returns the same generic message regardless of whether the email exists
+     * — prevents user enumeration attacks.
+     */
     @PostMapping("/forgot-password")
     public ResponseEntity<Map<String, String>> forgotPassword(
             @RequestBody Map<String, String> body) {
+
+        // FIXED SEC-003: was null — caused NPE passed to findByEmail()
         String email = body.get("email");
-        adminUserRepository.findByEmail(email).ifPresent(user -> {
-            if ("GOOGLE".equals(user.getAuthProvider())) return;
+        if (email == null || email.isBlank()) {
+            throw new ValidationException("email is required");
+        }
+
+        adminUserRepository.findByEmail(email.trim().toLowerCase()).ifPresent(user -> {
+            // Google-only accounts have no password to reset
+            if ("GOOGLE".equals(user.getAuthProvider())) {
+                log.info("Password reset skipped — Google-only account: userId={}", user.getId());
+                return;
+            }
+
             String resetToken = UUID.randomUUID().toString();
             redisTemplate.opsForValue().set(
                 RESET_PREFIX + resetToken, user.getId().toString(), 30, TimeUnit.MINUTES);
-            log.info("Password reset requested for userId={}", user.getId());
+
+            String resetLink = frontendUrl + "/reset-password?token=" + resetToken;
+            sendResetEmail(user.getEmail(), user.getFirstName(), resetLink);
+
+            log.info("Password reset token issued for userId={}", user.getId());
         });
+
+        // Always return the same message — prevents user enumeration
         return ResponseEntity.ok(Map.of(
             "message", "If that email is registered, a reset link has been sent."));
+    }
+
+    // ── 8. Reset Password (NEW — SEC-003 Part 2) ─────────────────────────────
+
+    /**
+     * Consumes the reset token from Redis and updates the password.
+     *
+     * Token is single-use — deleted from Redis immediately after successful reset.
+     * Existing refresh tokens are also invalidated so the user must log in fresh.
+     */
+    @PostMapping("/reset-password")
+    public ResponseEntity<Map<String, String>> resetPassword(
+            @Valid @RequestBody ResetPasswordRequest request) {
+
+        String userId = redisTemplate.opsForValue().get(RESET_PREFIX + request.getToken());
+        if (userId == null) {
+            // Same message for expired and invalid tokens — don't distinguish
+            throw new AuthenticationException(
+                "Reset link is invalid or has expired. Please request a new one.");
+        }
+
+        AdminUser user = adminUserRepository.findById(UUID.fromString(userId))
+                .orElseThrow(() -> new AuthenticationException("User not found"));
+
+        if ("GOOGLE".equals(user.getAuthProvider())) {
+            throw new AuthenticationException(
+                "This account uses Google sign-in and does not have a password.");
+        }
+
+        validatePasswordStrength(request.getNewPassword());
+
+        user.setPasswordHash(passwordEncoder.encode(request.getNewPassword()));
+        adminUserRepository.save(user);
+
+        // Single-use: delete the reset token immediately after successful reset
+        redisTemplate.delete(RESET_PREFIX + request.getToken());
+
+        // Invalidate any active sessions — force re-login with the new password
+        redisTemplate.delete(REFRESH_PREFIX + userId);
+
+        log.info("Password reset complete for userId={}", userId);
+        return ResponseEntity.ok(Map.of("message", "Password updated successfully. Please sign in."));
     }
 
     // ── Private helpers ───────────────────────────────────────────────────────
@@ -341,6 +430,72 @@ public class AuthController {
                 user.getFirstName(), user.getLastName(),
                 user.getRole(), tenantId,
                 user.getAvatarUrl(), user.getAuthProvider());
+    }
+
+    /**
+     * Send a password reset email via SendGrid.
+     * Falls back to logging the reset link in dev mode when no API key is configured.
+     *
+     * Failure is non-fatal: the reset token is already in Redis. If the email
+     * fails, the user can request another link and it will retry.
+     */
+    private void sendResetEmail(String recipientEmail, String firstName, String resetLink) {
+        if (sendGridApiKey == null || sendGridApiKey.isBlank()) {
+            log.info("[DEV MODE] Password reset link for {}: {}", recipientEmail, resetLink);
+            return;
+        }
+
+        String subject = "Reset your Notifly password";
+        String body = String.format("""
+                Hi %s,
+
+                We received a request to reset your Notifly password.
+                Click the link below to set a new password. This link expires in 30 minutes.
+
+                %s
+
+                If you didn't request this, you can safely ignore this email.
+                Your password will not change until you click the link above.
+
+                — The Notifly Team
+                """, firstName, resetLink);
+
+        try {
+            // Use fully-qualified names — simple name "Email" is shadowed by
+            // jakarta.validation.constraints.Email used on the DTO fields above.
+            com.sendgrid.helpers.mail.objects.Email from =
+                new com.sendgrid.helpers.mail.objects.Email(fromEmail, fromName);
+            com.sendgrid.helpers.mail.objects.Email to =
+                new com.sendgrid.helpers.mail.objects.Email(recipientEmail);
+
+            // Build via setters — avoids the 4-arg Mail constructor which is
+            // absent in some SendGrid 4.x patch versions.
+            Mail mail = new Mail();
+            mail.setFrom(from);
+            mail.setSubject(subject);
+            com.sendgrid.helpers.mail.objects.Personalization personalization =
+                new com.sendgrid.helpers.mail.objects.Personalization();
+            personalization.addTo(to);
+            mail.addPersonalization(personalization);
+            mail.addContent(new Content("text/plain", body));
+
+            SendGrid sg = new SendGrid(sendGridApiKey);
+            Request sgRequest = new Request();
+            sgRequest.setMethod(Method.POST);
+            sgRequest.setEndpoint("mail/send");
+            sgRequest.setBody(mail.build());
+
+            Response response = sg.api(sgRequest);
+            if (response.getStatusCode() == 202) {
+                log.info("Password reset email sent to={}", recipientEmail);
+            } else {
+                log.error("SendGrid reset email failed: status={}, body={}",
+                        response.getStatusCode(), response.getBody());
+            }
+        } catch (IOException e) {
+            // Don't throw — token is already in Redis, user can retry the request
+            log.error("Failed to send password reset email to={}: {}", recipientEmail, e.getMessage());
+        }
     }
 
     /**
@@ -434,6 +589,11 @@ public class AuthController {
 
     @Data public static class RefreshRequest {
         private String refreshToken;
+    }
+
+    @Data public static class ResetPasswordRequest {
+        @NotBlank                 private String token;
+        @NotBlank @Size(min = 10) private String newPassword;
     }
 
     public record AuthResponse(

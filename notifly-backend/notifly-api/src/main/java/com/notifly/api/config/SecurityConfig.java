@@ -32,9 +32,25 @@ import java.util.List;
  *  1. CORS was using allowedOriginPatterns("*") with allowCredentials(true).
  *     This is dangerous — any origin can make credentialed cross-site requests.
  *     Now reads allowed origins from ALLOWED_ORIGINS env var.
- *  2. /actuator/prometheus was public — internal metrics exposed to the internet.
- *     Now only health and info are public; prometheus requires authentication.
- *  3. Added proper 401/403 response handlers for API clients (no browser redirect).
+ *  2. Added proper 401/403 JSON response handlers for API clients.
+ *
+ * INF-001 FIX — Prometheus auth:
+ *  The previous config had .requestMatchers("/actuator/prometheus").hasRole("ADMIN")
+ *  but prometheus.yml scraped with no credentials → every scrape returned 401
+ *  → Grafana showed no data.
+ *
+ *  Fix: Actuator endpoints (including /actuator/prometheus) are moved to a
+ *  separate management port (9091) defined in application.yml. Spring Boot's
+ *  management server runs on its own embedded Tomcat instance that is completely
+ *  separate from this SecurityFilterChain. SecurityFilterChain only applies to
+ *  the main port (8080) — the management port has no security filter chain,
+ *  so Prometheus can scrape freely.
+ *
+ *  Port 9091 must NOT be exposed outside the Docker network (no ports: mapping
+ *  in docker-compose.yml for it). Prometheus reaches it via the internal network.
+ *
+ *  Result: /actuator/prometheus on port 9091 → open to Prometheus (internal only)
+ *          /actuator/* on port 8080          → these paths no longer exist
  */
 @Configuration
 @EnableWebSecurity
@@ -45,19 +61,17 @@ public class SecurityConfig {
     private final JwtAuthFilter jwtAuthFilter;
     private final TenantFilter tenantFilter;
 
-    // FIXED: Read allowed origins from env — not wildcard
     @Value("${notifly.cors.allowed-origins:http://localhost:3000}")
     private String allowedOriginsConfig;
 
     /**
-     * Public endpoints — no auth required.
-     * NOTE: /actuator/prometheus is intentionally NOT here (moved to internal port).
+     * Public endpoints on the main port (8080).
+     * Actuator endpoints are NOT listed here — they live on port 9091 only.
      */
     private static final String[] PUBLIC_URLS = {
-        "/api/v1/auth/**",
-        "/actuator/health",
-        "/actuator/info"
-        // DO NOT add /actuator/prometheus here — metrics are sensitive
+        "/api/v1/auth/**"
+        // /actuator/** intentionally omitted — served on management port 9091,
+        // not reachable through this filter chain at all.
     };
 
     @Bean
@@ -67,7 +81,6 @@ public class SecurityConfig {
             .csrf(csrf -> csrf.disable())
             .sessionManagement(session ->
                 session.sessionCreationPolicy(SessionCreationPolicy.STATELESS))
-            // FIXED: Send 401 JSON response instead of browser redirect for API clients
             .exceptionHandling(ex -> ex
                 .authenticationEntryPoint((request, response, authException) -> {
                     response.setContentType("application/json");
@@ -90,9 +103,9 @@ public class SecurityConfig {
                 .requestMatchers("/api/v1/admin/**").hasRole("ADMIN")
                 .requestMatchers(HttpMethod.POST, "/api/v1/notifications").hasAnyRole("ADMIN", "SERVICE")
                 .requestMatchers(HttpMethod.GET,  "/api/v1/notifications/**").hasAnyRole("ADMIN", "SERVICE")
-                // Prometheus requires authentication — not public
-                .requestMatchers("/actuator/prometheus").hasRole("ADMIN")
-                .requestMatchers("/actuator/**").hasRole("ADMIN")
+                // INF-001: No actuator rules here — actuator is on port 9091, not 8080.
+                // Any request that somehow reaches /actuator on port 8080 is blocked
+                // by the catch-all below (authenticated() → 401 for unauthenticated).
                 .anyRequest().authenticated()
             )
             .addFilterBefore(apiKeyAuthFilter, UsernamePasswordAuthenticationFilter.class)
@@ -113,7 +126,7 @@ public class SecurityConfig {
     }
 
     /**
-     * FIXED: Reads allowed origins from env — never uses wildcard with credentials.
+     * CORS — reads allowed origins from env, never uses wildcard with credentials.
      *
      * Set ALLOWED_ORIGINS env var as comma-separated list:
      *   ALLOWED_ORIGINS=http://localhost:3000,https://app.yourdomain.com
@@ -122,7 +135,6 @@ public class SecurityConfig {
     public CorsConfigurationSource corsConfigurationSource() {
         CorsConfiguration config = new CorsConfiguration();
 
-        // FIXED: Parse from env, not hardcoded wildcard
         List<String> allowedOrigins = Arrays.asList(allowedOriginsConfig.split(","));
         config.setAllowedOrigins(allowedOrigins);
 

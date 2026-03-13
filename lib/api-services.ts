@@ -202,7 +202,10 @@ export const templateService = {
   deactivate: (id: string) =>
     apiClient.put<NotificationTemplate>(`/admin/templates/${id}`, { active: false }).then((r) => r.data),
 
-  getVersionHistory: (_id: string) => Promise.resolve([]),
+  // CQ-005 FIX: was permanently stubbed as Promise.resolve([]) — version history was always empty.
+  // Now calls the real GET /admin/templates/:id/versions endpoint.
+  getVersionHistory: (id: string) =>
+    apiClient.get<unknown[]>(`/admin/templates/${id}/versions`).then((r) => r.data),
 };
 
 // ── API Keys ──────────────────────────────────────────────────────────────────
@@ -210,11 +213,13 @@ export const apiKeyService = {
   getKeys: () =>
     apiClient.get<ApiKey[]>("/admin/api-keys").then((r) => r.data),
 
+  // CQ-004 FIX: was hardcoded role: "SERVICE" — data.role was silently ignored,
+  // making it impossible to create ADMIN keys from the UI.
   create: (data: CreateApiKeyRequest) =>
     apiClient
       .post<CreateApiKeyResponse>("/admin/api-keys", {
         displayName: data.name,
-        role: "SERVICE",
+        role: data.role ?? "SERVICE",
       })
       .then((r) => r.data),
 

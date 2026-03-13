@@ -26,13 +26,22 @@ export interface LoginRequest {
   password: string;
 }
 
-export interface RegisterRequest {
-  tenantId:  string;
-  firstName: string;
-  lastName:  string;
-  email:     string;
-  password:  string;
-}
+// BUG-008 FIX: RegisterRequest removed from this file.
+// The canonical definition lives in auth-context.tsx:
+//
+//   export interface RegisterRequest {
+//     email:         string;
+//     password:      string;
+//     firstName:     string;
+//     lastName:      string;
+//     workspaceName: string;   ← replaces the old tenantId field
+//   }
+//
+// Import it from there:
+//   import type { RegisterRequest } from "@/lib/auth-context";
+//
+// The old version here had `tenantId: string` which the backend no longer
+// accepts — keeping it would let developers silently send the wrong payload.
 
 export interface AuthResponse {
   accessToken:  string;
@@ -209,6 +218,7 @@ export interface ApiKey {
 
 export interface CreateApiKeyRequest {
   name:           string;
+  role?:          "ADMIN" | "SERVICE";  // CQ-004: defaults to SERVICE if omitted
   expiresInDays?: number;
 }
 

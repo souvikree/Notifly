@@ -44,9 +44,24 @@ public class AdminController {
 
     // ── Metrics ───────────────────────────────────────────────────────────────
 
+    /**
+     * BUG-003 FIX: timeSeries was always List.of() - chart was permanently blank.
+     *              Now calls getDailyStats() and respects the period param.
+     * BUG-004 FIX: failureRate was never added to the metrics map - always 0 on frontend.
+     */
     @GetMapping("/metrics")
-    public ResponseEntity<Map<String, Object>> getMetrics() {
+    public ResponseEntity<Map<String, Object>> getMetrics(
+            @RequestParam(required = false, defaultValue = "7d") String period) {
+
         UUID tenantId = TenantContext.getTenantId();
+
+        // BUG-003: map period string to days integer for getDailyStats()
+        int days = switch (period) {
+            case "24h" -> 1;
+            case "30d" -> 30;
+            case "90d" -> 90;
+            default    -> 7;
+        };
 
         long total        = logRepository.countByTenantId(tenantId);
         long succeeded    = logRepository.countByTenantIdAndStatus(tenantId, "SENT");
@@ -56,6 +71,8 @@ public class AdminController {
         Double p99Latency = logRepository.p99LatencyByTenantId(tenantId);
 
         double successRate = total > 0 ? (double) succeeded / total * 100.0 : 0.0;
+        // BUG-004 FIX: failureRate was never put in the map
+        double failureRate = total > 0 ? (double) failed  / total * 100.0 : 0.0;
 
         Map<String, Long> emailStats = Map.of(
                 "sent",   logRepository.countByTenantIdAndChannelAndStatus(tenantId, "EMAIL", "SENT"),
@@ -79,9 +96,23 @@ public class AdminController {
         metrics.put("averageLatency",       avgLatency != null ? avgLatency : 0.0);
         metrics.put("p99Latency",           p99Latency != null ? p99Latency : 0.0);
         metrics.put("successRate",          successRate);
+        metrics.put("failureRate",          failureRate);
         metrics.put("channelMetrics",       Map.of("email", emailStats, "sms", smsStats, "push", pushStats));
 
-        return ResponseEntity.ok(Map.of("metrics", metrics, "timeSeries", List.of()));
+        // BUG-003 FIX: real time-series from DB instead of always-empty List.of()
+        List<Map<String, Object>> timeSeries = logRepository.getDailyStats(tenantId, days)
+                .stream()
+                .map(row -> {
+                    Map<String, Object> point = new LinkedHashMap<>();
+                    point.put("date",    row[0].toString());
+                    point.put("total",   ((Number) row[1]).longValue());
+                    point.put("success", ((Number) row[2]).longValue());
+                    point.put("failed",  ((Number) row[3]).longValue());
+                    return point;
+                })
+                .toList();
+
+        return ResponseEntity.ok(Map.of("metrics", metrics, "timeSeries", timeSeries));
     }
 
     // ── Notification Logs ─────────────────────────────────────────────────────
@@ -462,6 +493,42 @@ public class AdminController {
         response.put("updatedAt", saved.getUpdatedAt());
 
         return ResponseEntity.ok(response);
+    }
+
+    // ── Template Version History ──────────────────────────────────────────────
+
+    /**
+     * CQ-005 FIX: getVersionHistory() was permanently stubbed on the frontend
+     * (always returned Promise.resolve([])) because this endpoint did not exist.
+     *
+     * Returns all versions of a template grouped by name, ordered oldest to newest.
+     * Tenancy is enforced: the template must belong to the calling tenant.
+     */
+    @GetMapping("/templates/{id}/versions")
+    public ResponseEntity<List<Map<String, Object>>> getTemplateVersions(@PathVariable UUID id) {
+        UUID tenantId = TenantContext.getTenantId();
+
+        // Resolve the template name from the given ID (also validates tenant ownership)
+        String templateName = templateRepository.findByIdAndTenantId(id, tenantId)
+                .orElseThrow(() -> new ValidationException("Template not found: " + id))
+                .getName();
+
+        // Fetch all versions for this name — one row per version in the DB
+        List<Map<String, Object>> versions = templateRepository
+                .findAllByTenantIdAndName(tenantId, templateName)
+                .stream()
+                .map(t -> {
+                    Map<String, Object> m = new LinkedHashMap<>();
+                    m.put("version",   t.getVersion());
+                    m.put("content",   t.getContent());
+                    m.put("subject",   t.getSubject());
+                    m.put("isActive",  t.getIsActive());
+                    m.put("createdAt", t.getCreatedAt());
+                    return m;
+                })
+                .toList();
+
+        return ResponseEntity.ok(versions);
     }
 
     // ── Request DTOs ──────────────────────────────────────────────────────────

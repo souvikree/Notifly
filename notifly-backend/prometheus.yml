@@ -1,11 +1,18 @@
 # ─────────────────────────────────────────────────────────────────────────────
 # Prometheus Configuration for Notifly
 #
-# FIXED from original:
-#  1. Original only scraped notifly-api:8080. Worker metrics were invisible.
-#     Added scrape jobs for both worker instances.
-#  2. Added labels for easier dashboard filtering.
-#  3. Added Kafka JMX metrics scraping via jmx_exporter (optional).
+# INF-001 FIX:
+#   notifly-api is now scraped on port 9091 (management port), not 8080.
+#   Port 8080 is the public API — its /actuator/prometheus is protected by
+#   Spring Security and would return 401. Port 9091 is the dedicated management
+#   server with no security filter chain — Prometheus scrapes it freely.
+#
+#   notifly-worker was never changed — it still exposes metrics on 8081
+#   with no security restrictions (worker has no SecurityConfig).
+#
+# Previous fixes retained:
+#   - Worker scrape jobs added (were missing entirely before)
+#   - Labels added for Grafana dashboard filtering
 # ─────────────────────────────────────────────────────────────────────────────
 
 global:
@@ -26,21 +33,19 @@ scrape_configs:
       - targets: ['localhost:9090']
 
   # ── Notifly API ─────────────────────────────────────────────────────────────
+  # INF-001 FIX: port changed 8080 → 9091 (management port, no auth required).
+  # Port 9091 is internal-only — not mapped to the host in docker-compose.yml.
   - job_name: 'notifly-api'
     metrics_path: '/actuator/prometheus'
     scrape_interval: 15s
     static_configs:
-      - targets: ['notifly-api:8080']
+      - targets: ['notifly-api:9091']
         labels:
           service:  'api'
           instance: 'api-1'
-    # NOTE: In production with Prometheus auth, add:
-    # basic_auth:
-    #   username: prometheus
-    #   password: <scrape-password>
 
-  # ── Notifly Worker instances ─────────────────────────────────────────────────
-  # FIXED: Was missing entirely — worker metrics (sent/failed/retry/DLQ) were invisible
+  # ── Notifly Worker instances ──────────────────────────────────────────────
+  # Worker has no SecurityConfig — port 8081 is open to Prometheus as-is.
   - job_name: 'notifly-worker'
     metrics_path: '/actuator/prometheus'
     scrape_interval: 15s

@@ -175,8 +175,9 @@ export interface TemplateVersion {
   version:   number;
   content:   string;            // "content" not "body"
   subject?:  string;
+  isActive?: boolean;
   createdAt: string;
-  createdBy: string;
+  createdBy?: string;           // backend does not return this field — always optional
 }
 
 // Matches backend AdminController.CreateTemplateRequest exactly:

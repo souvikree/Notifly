@@ -40,21 +40,24 @@ export default function TemplateDetailPage() {
   const id     = params.id as string;
 
   const { data: fetchedTemplate } = useTemplate(id);
+  // CQ-005 FIX: getVersionHistory now returns TemplateVersion[] from the real endpoint.
+  // The hook returns unknown[] by default — cast via the typed service call.
   const { data: fetchedVersions } = useTemplateVersions(id);
 
   const mockMatch = mockTemplates.find((t) => t.id === id);
   const template: NotificationTemplate | undefined =
     fetchedTemplate ?? (mockMatch ? adaptMock(mockMatch) : undefined);
 
-  const versions: TemplateVersion[] = fetchedVersions ?? [];
+  // fetchedVersions is TemplateVersion[] (typed in api-services.ts) — safe to use directly
+  const versions: TemplateVersion[] = (fetchedVersions as TemplateVersion[] | undefined) ?? [];
 
   const updateMutation     = useUpdateTemplate();
   const publishMutation    = usePublishTemplate();
   const deactivateMutation = useDeactivateTemplate();
 
-  const [editing, setEditing]         = useState(false);
-  const [editSubject, setEditSubject] = useState("");
-  const [editContent, setEditContent] = useState("");
+  const [editing, setEditing]           = useState(false);
+  const [editSubject, setEditSubject]   = useState("");
+  const [editContent, setEditContent]   = useState("");
   const [showVersions, setShowVersions] = useState(false);
 
   if (!template) {
@@ -76,8 +79,6 @@ export default function TemplateDetailPage() {
       {
         id,
         data: {
-          // UpdateTemplateRequest only accepts: content, subject, active
-          // "name" is not updatable per backend
           content: editContent,
           subject: editSubject || undefined,
         },
@@ -110,7 +111,6 @@ export default function TemplateDetailPage() {
             >
               {template.isActive ? "Active" : "Inactive"}
             </Badge>
-            {/* Cast channel string to NotificationChannel for ChannelBadge */}
             <ChannelBadge channel={template.channel as NotificationChannel} />
           </div>
         </PageHeader>
@@ -224,7 +224,6 @@ export default function TemplateDetailPage() {
             </CardContent>
           </Card>
 
-          {/* Variables — only shown if present */}
           {(template.variables ?? []).length > 0 && (
             <Card className="border-border/50 bg-card">
               <CardHeader>
@@ -311,7 +310,10 @@ export default function TemplateDetailPage() {
                             <p className="text-xs text-muted-foreground">
                               {formatDistanceToNow(new Date(v.createdAt), { addSuffix: true })}
                             </p>
-                            <p className="mt-1 text-xs text-muted-foreground">by {v.createdBy}</p>
+                            {/* createdBy is not returned by backend — omit rather than show undefined */}
+                            {v.createdBy && (
+                              <p className="mt-1 text-xs text-muted-foreground">by {v.createdBy}</p>
+                            )}
                           </div>
                         </div>
                       ))}

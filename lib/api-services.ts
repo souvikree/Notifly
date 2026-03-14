@@ -13,6 +13,7 @@ import type {
   TemplateFilters,
   CreateTemplateRequest,
   UpdateTemplateRequest,
+  TemplateVersion,
   ApiKey,
   CreateApiKeyRequest,
   CreateApiKeyResponse,
@@ -205,7 +206,7 @@ export const templateService = {
   // CQ-005 FIX: was permanently stubbed as Promise.resolve([]) — version history was always empty.
   // Now calls the real GET /admin/templates/:id/versions endpoint.
   getVersionHistory: (id: string) =>
-    apiClient.get<unknown[]>(`/admin/templates/${id}/versions`).then((r) => r.data),
+    apiClient.get<TemplateVersion[]>(`/admin/templates/${id}/versions`).then((r) => r.data),
 };
 
 // ── API Keys ──────────────────────────────────────────────────────────────────

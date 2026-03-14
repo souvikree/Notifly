@@ -4,7 +4,6 @@ import { useState, useCallback } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useAuth } from "@/lib/auth-context";
-import { useGoogleLogin } from "@react-oauth/google";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -16,10 +15,13 @@ import { Separator } from "@/components/ui/separator";
 import { toast } from "sonner";
 import { motion } from "framer-motion";
 import { Bell, Loader2 } from "lucide-react";
+import { GoogleLogin } from "@react-oauth/google";
+import { authService } from "@/lib/api-services";
+import type { AuthResponse } from "@/lib/types";
 
 export default function LoginPage() {
   const router = useRouter();
-  const { login, loginWithGoogle } = useAuth();
+  const { login, setAuthFromResponse } = useAuth();
 
   const [email,           setEmail]           = useState("");
   const [password,        setPassword]        = useState("");
@@ -35,7 +37,6 @@ export default function LoginPage() {
       await login({ email, password });
       router.push("/dashboard");
     } catch (err: any) {
-      // Show the backend message if available, else a generic one
       toast.error(err?.message ?? "Invalid email or password.");
     } finally {
       setIsLoading(false);
@@ -43,38 +44,39 @@ export default function LoginPage() {
   };
 
   // ── Google OAuth ──────────────────────────────────────────────────────────
-  // useGoogleLogin uses the Authorization Code flow (recommended over implicit).
-  // onSuccess receives { code } which we exchange on the backend.
-  // We use tokenResponse.credential (ID token) from the popup flow here.
-  const handleGoogleSuccess = useCallback(async (credentialResponse: { credential?: string }) => {
-    if (!credentialResponse.credential) {
+  // FIX (HIGH-001): loginWithGoogle() in auth-context blindly casts the response
+  // to AuthResponse and calls persist() without checking for needsOnboarding.
+  // When a brand-new Google user hits the login page, the backend returns
+  // 202 { needsOnboarding: true } — persist() crashes on missing fields,
+  // which previously caused the "No tenant configured" error.
+  //
+  // Fix: call authService.googleAuth() directly (same pattern as register page)
+  // and branch on needsOnboarding before touching auth state.
+  const handleGoogleSuccess = useCallback(async (cred: { credential?: string }) => {
+    if (!cred.credential) {
       toast.error("Google sign-in failed — no credential received.");
       return;
     }
     setIsGoogleLoading(true);
     try {
-      await loginWithGoogle(credentialResponse.credential);
+      const response = await authService.googleAuth(cred.credential);
+
+      // New Google user — no tenant yet, send to onboarding
+      if ((response as any).needsOnboarding) {
+        sessionStorage.setItem("googleOnboarding", JSON.stringify((response as any).profile));
+        router.push("/onboarding");
+        return;
+      }
+
+      // Existing user (Google account or linked account) — log them in
+      setAuthFromResponse(response as AuthResponse);
       router.push("/dashboard");
     } catch (err: any) {
       toast.error(err?.message ?? "Google sign-in failed. Please try again.");
     } finally {
       setIsGoogleLoading(false);
     }
-  }, [loginWithGoogle, router]);
-
-  // This uses @react-oauth/google's useGoogleLogin hook
-  // It opens a Google popup and calls handleGoogleSuccess with the ID token
-  const googleLogin = useGoogleLogin({
-    onSuccess: (tokenResponse) => {
-      // useGoogleLogin with flow="implicit" returns access_token
-      // We need the ID token, so we use the credential (one-tap) approach instead.
-      // See GoogleOneTapButton below for the recommended approach.
-      // This button is a fallback using the popup.
-      toast.error("Use the Google button below — it provides the ID token.");
-    },
-    onError: () => toast.error("Google sign-in failed."),
-    flow: "implicit",
-  });
+  }, [router, setAuthFromResponse]);
 
   return (
     <motion.div
@@ -99,11 +101,25 @@ export default function LoginPage() {
 
         <CardContent className="space-y-4">
           {/* Google Sign-In Button */}
-          <GoogleSignInButton
-            loading={isGoogleLoading}
-            onSuccess={handleGoogleSuccess}
-            onError={() => toast.error("Google sign-in failed.")}
-          />
+          {isGoogleLoading ? (
+            <Button variant="outline" className="w-full" disabled>
+              <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+              Signing in with Google…
+            </Button>
+          ) : (
+            <div className="flex justify-center">
+              <GoogleLogin
+                onSuccess={handleGoogleSuccess}
+                onError={() => toast.error("Google sign-in failed.")}
+                theme="filled_black"
+                shape="rectangular"
+                size="large"
+                width="400"
+                text="signin_with"
+                useOneTap={false}
+              />
+            </div>
+          )}
 
           <div className="relative">
             <div className="absolute inset-0 flex items-center">
@@ -152,44 +168,5 @@ export default function LoginPage() {
         </CardFooter>
       </Card>
     </motion.div>
-  );
-}
-
-// ── Separate component uses Google One Tap / credential response ──────────────
-// This is the correct way to get an ID token from @react-oauth/google
-import { GoogleLogin } from "@react-oauth/google";
-
-function GoogleSignInButton({
-  loading,
-  onSuccess,
-  onError,
-}: {
-  loading: boolean;
-  onSuccess: (cred: { credential?: string }) => void;
-  onError: () => void;
-}) {
-  if (loading) {
-    return (
-      <Button variant="outline" className="w-full" disabled>
-        <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-        Signing in with Google…
-      </Button>
-    );
-  }
-
-  return (
-    // GoogleLogin renders Google's official button — gets ID token in credential
-    <div className="flex justify-center">
-      <GoogleLogin
-        onSuccess={onSuccess}
-        onError={onError}
-        theme="filled_black"
-        shape="rectangular"
-        size="large"
-        width="400"
-        text="signin_with"
-        useOneTap={false}
-      />
-    </div>
   );
 }

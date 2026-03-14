@@ -1,35 +1,27 @@
 /** @type {import('next').NextConfig} */
 const nextConfig = {
   // FIXED: Was ignoreBuildErrors: true — type errors were silently deployed.
-  // This is a major security and reliability risk. TypeScript errors must fail the build.
   typescript: {
     ignoreBuildErrors: false,
   },
 
-  // Keep image optimization disabled (unoptimized: true) for simplicity.
-  // Remove this when you add a proper image CDN (Cloudinary, Imgix, etc.)
+  /**
+   * Disable React StrictMode.
+   *
+   * StrictMode double-invokes effects in development. @react-oauth/google calls
+   * google.accounts.id.initialize() in a useEffect — when invoked twice, the
+   * second call corrupts GSI state and Google rejects the origin with 403.
+   * Known incompatibility: https://github.com/MomenSherif/react-oauth/issues/12
+   */
+  reactStrictMode: false,
+
   images: {
     unoptimized: true,
   },
 
-  // Required for Docker standalone output (used in Dockerfile.frontend)
+  // Required for Docker standalone output
   output: 'standalone',
 
-  /**
-   * API proxy rewrites.
-   *
-   * FIXED: Frontend had no proxy config, requiring NEXT_PUBLIC_API_URL to be
-   * set correctly in every environment. This was causing browser CORS issues
-   * when the frontend container needed to talk to the API container.
-   *
-   * With this proxy:
-   *  - Browser calls /api/backend/... (same origin — no CORS)
-   *  - Next.js server forwards to BACKEND_URL/api/...
-   *  - Credentials stay server-side
-   *
-   * For direct API access (using NEXT_PUBLIC_API_URL), keep the existing
-   * api-client.ts behavior — both approaches coexist.
-   */
   async rewrites() {
     const backendUrl = process.env.BACKEND_URL || 'http://localhost:8080';
     return [
@@ -40,21 +32,36 @@ const nextConfig = {
     ];
   },
 
-  /**
-   * Security headers applied to all responses.
-   */
   async headers() {
     return [
       {
         source: '/(.*)',
         headers: [
-          { key: 'X-Frame-Options',           value: 'DENY' },
-          { key: 'X-Content-Type-Options',    value: 'nosniff' },
-          { key: 'Referrer-Policy',           value: 'strict-origin-when-cross-origin' },
-          { key: 'X-XSS-Protection',          value: '1; mode=block' },
+          { key: 'X-Frame-Options',        value: 'DENY' },
+          { key: 'X-Content-Type-Options', value: 'nosniff' },
+          { key: 'Referrer-Policy',        value: 'strict-origin-when-cross-origin' },
+          { key: 'X-XSS-Protection',       value: '1; mode=block' },
           {
-            key: 'Permissions-Policy',
+            key:   'Permissions-Policy',
             value: 'camera=(), microphone=(), geolocation=()',
+          },
+          /**
+           * FIXED: Cross-Origin-Opener-Policy was missing.
+           *
+           * The default browser COOP is "unsafe-none", but some environments
+           * (Vercel, certain proxies) inject "same-origin" which completely
+           * breaks Google's sign-in popup. The popup communicates the credential
+           * back to your page via window.postMessage — if COOP is "same-origin",
+           * the browser tears down the opener reference and the message is lost,
+           * causing the silent 403 / "origin not allowed" errors.
+           *
+           * "same-origin-allow-popups" is the correct value:
+           *   - Keeps cross-origin windows from accessing your page (safe)
+           *   - Allows popups YOU opened (Google sign-in) to postMessage back (required)
+           */
+          {
+            key:   'Cross-Origin-Opener-Policy',
+            value: 'same-origin-allow-popups',
           },
         ],
       },
